@@ -1,0 +1,125 @@
+# Complete version of the operator configuration example in the Gatehouse design.
+ports:
+  8443: {identity: direct}
+  8445: {identity: proxyProtocol, trustedCIDRs: [10.42.0.0/16, 'fd12:3456:789a:4200::/56']}
+  8000: {identity: direct, mode: redirect}
+  8001: {identity: proxyProtocol, trustedCIDRs: [10.42.0.0/16], mode: redirect}
+  8446:
+    identity: cloudflare
+    trustedCIDRs: [10.42.0.0/16]
+    edgeSecret: {header: X-Noqer-Edge-Auth, secret: cloudflare-edge-auth, keys: [current, previous]}
+clientCertProfiles:
+  clients: {caSecret: mtls-clients-v1-trust, minVersion: "1.2", sessionTickets: false}
+forwardAuthClasses:
+  gatus-bearer:
+    address: http://authelia.authelia.svc.cluster.local:9091/api/authz/gatus
+    requestHeaders: [Authorization]
+    stripAfter: [Authorization]
+    maxResponseBytes: 65536
+  machine-bearer:
+    address: http://authelia.authelia.svc.cluster.local:9091/api/authz/gatus-machine
+    requestHeaders: [Authorization]
+    stripAfter: [Authorization, Cookie]
+    maxResponseBytes: 65536
+hosts:
+  bazarr.noqer.com:
+    namespace: bazarr
+    dnsGroup: frps
+    proxied: false
+    ports: [8443, 8445]
+    protection: mtls:clients
+    identities: [urn:noqer:mtls:clients:z-arch]
+  homeassistant.noqer.com:
+    namespace: external-ingress
+    dnsGroup: none
+    proxied: false
+    ports: [8443]
+    protection: mtls:clients
+    identities: [urn:noqer:mtls:clients:gatus-cluster-1]
+    identityConstraints:
+      urn:noqer:mtls:clients:gatus-cluster-1: {methods: [GET], paths: [/manifest.json]}
+  s3.noqer.com:
+    namespace: external-ingress
+    dnsGroup: none
+    proxied: false
+    ports: [8443]
+    protection: public
+    deny:
+      prefixes: [/minio/admin, /rustfs/admin, /rustfs/console,
+                 /metrics/minio/admin, /metrics/rustfs/admin, /metrics/rustfs/console]
+  jellyfin.noqer.com:
+    namespace: jellyfin
+    dnsGroup: frps
+    proxied: false
+    ports: [8443, 8445]
+    protection: oidc:user
+    exceptions: [{path: /health, methods: [GET], forwardAuth: gatus-bearer}]
+  auth.noqer.com:
+    namespace: authelia
+    dnsGroup: tunnel
+    proxied: true
+    ports: [8443, 8446]
+    protection: public
+    delegate:
+      - namespace: whoami
+        paths: [/machine-probes/whoami-health]
+        methods: [GET]
+        forwardAuth: machine-bearer
+        rewrite: /health
+  auth-user-cluster-1.noqer.com:
+    namespace: gatehouse
+    dnsGroup: tunnel
+    proxied: true
+    ports: [8443, 8446]
+    protection: oidcCallback:user
+  auth-admin-cluster-1.noqer.com:
+    namespace: gatehouse
+    dnsGroup: tunnel
+    proxied: true
+    ports: [8443, 8446]
+    protection: oidcCallback:admin
+  gatehouse-cluster-1.noqer.com:
+    namespace: gatehouse
+    dnsGroup: none
+    proxied: false
+    ports: [8443]
+    protection: mtls:clients
+    identities: [urn:noqer:mtls:clients:z-arch]
+dnsGroups:
+  tunnel: cluster-1.noqer.com
+  frps: frps-gw.noqer.com
+  frps-single-1: frps-gw-single-1.noqer.com
+  frps-single-2: frps-gw-single-2.noqer.com
+  frps-single-3: frps-gw-single-3.noqer.com
+  none: null
+lanBackends: [{cidr: 192.168.2.50/32, ports: [8006]}]
+authClasses:
+  admin:
+    issuer: https://auth.noqer.com
+    clientID: edge-admin-cluster-1
+    scopes: [openid, profile, email, groups]
+    callback: https://auth-admin-cluster-1.noqer.com/oauth2/callback
+    groups: [admin]
+    softExpiry: 1h
+    hardExpiry: 8h
+    cookieDomain: .noqer.com
+    redirectHosts: []
+  user:
+    issuer: https://auth.noqer.com
+    clientID: edge-user-cluster-1
+    scopes: [openid, profile, email, groups]
+    callback: https://auth-user-cluster-1.noqer.com/oauth2/callback
+    groups: []
+    softExpiry: 1h
+    hardExpiry: 8h
+    cookieDomain: .noqer.com
+    redirectHosts: [jellyfin.noqer.com]
+deviceTrust:
+  caConfigMap: device-ca
+  exceptions: []
+defaults:
+  crowdsec: true
+  limits:
+    perRouteClient: {perMinute: 30000, perSecondSlot: 3000, inFlight: 3000}
+    perRouteHost: {inFlight: 6000}
+  compression: {encodings: [zstd, br, gzip], minBytes: 1024}
