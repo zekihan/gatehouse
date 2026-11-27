@@ -1,0 +1,369 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Gatehouse operator configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "ports",
+    "clientCertProfiles",
+    "forwardAuthClasses",
+    "hosts",
+    "dnsGroups",
+    "lanBackends",
+    "authClasses",
+    "deviceTrust",
+    "defaults"
+  ],
+  "properties": {
+    "ports": {
+      "type": "object",
+      "minProperties": 1,
+      "patternProperties": {
+        "^(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$": {"$ref": "#/definitions/port"}
+      },
+      "additionalProperties": false
+    },
+    "clientCertProfiles": {
+      "type": "object",
+      "minProperties": 0,
+      "propertyNames": {"type": "string", "minLength": 1, "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$"},
+      "additionalProperties": {"$ref": "#/definitions/clientCertProfile"}
+    },
+    "forwardAuthClasses": {
+      "type": "object",
+      "minProperties": 0,
+      "propertyNames": {"type": "string", "minLength": 1, "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$"},
+      "additionalProperties": {"$ref": "#/definitions/forwardAuthClass"}
+    },
+    "hosts": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?)+$",
+        "maxLength": 253
+      },
+      "additionalProperties": {"$ref": "#/definitions/host"}
+    },
+    "dnsGroups": {
+      "type": "object",
+      "minProperties": 0,
+      "propertyNames": {"type": "string", "minLength": 1, "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$"},
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?)+$",
+        "maxLength": 253
+      },
+      "properties": {"none": {"type": "null"}}
+    },
+    "lanBackends": {"type": "array", "minItems": 0, "uniqueItems": true, "items": {"$ref": "#/definitions/lanBackend"}},
+    "authClasses": {
+      "type": "object",
+      "minProperties": 0,
+      "propertyNames": {"type": "string", "minLength": 1, "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$"},
+      "additionalProperties": {"$ref": "#/definitions/authClass"}
+    },
+    "deviceTrust": {"$ref": "#/definitions/deviceTrust"},
+    "defaults": {"$ref": "#/definitions/defaults"}
+  },
+  "definitions": {
+    "portNumber": {"type": "integer", "minimum": 1, "maximum": 65535},
+    "port": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identity"],
+      "properties": {
+        "identity": {"enum": ["direct", "proxyProtocol", "cloudflare"]},
+        "trustedCIDRs": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/definitions/cidr"}},
+        "mode": {"enum": ["redirect"]},
+        "edgeSecret": {"$ref": "#/definitions/edgeSecret"}
+      },
+      "allOf": [
+        {
+          "if": {"required": ["identity"], "properties": {"identity": {"const": "direct"}}},
+          "then": {"not": {"required": ["trustedCIDRs"]}},
+          "else": {"required": ["trustedCIDRs"]}
+        },
+        {
+          "if": {"required": ["identity"], "properties": {"identity": {"const": "cloudflare"}}},
+          "then": {"required": ["edgeSecret"], "not": {"required": ["mode"]}},
+          "else": {"not": {"required": ["edgeSecret"]}}
+        }
+      ]
+    },
+    "cidr": {"type": "string", "minLength": 1, "pattern": "^[0-9A-Fa-f:.]+/[0-9]{1,3}$"},
+    "path": {"type": "string", "minLength": 1, "pattern": "^/[^?#\\s]*$"},
+    "method": {"type": "string", "minLength": 1, "pattern": "^[!#$%&'*+.^_`|~0-9A-Z-]+$"},
+    "identity": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^urn:noqer:mtls:[a-z0-9]+(?:-[a-z0-9]+)*:[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
+      "maxLength": 128
+    },
+    "edgeSecret": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["header", "secret", "keys"],
+      "properties": {
+        "header": {"type": "string", "minLength": 1, "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$"},
+        "secret": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?)*$",
+          "maxLength": 253
+        },
+        "keys": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9._-]+$"},
+          "maxItems": 2
+        }
+      }
+    },
+    "clientCertProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["caSecret", "minVersion", "sessionTickets"],
+      "properties": {
+        "caSecret": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?)*$",
+          "maxLength": 253
+        },
+        "minVersion": {"enum": ["1.2", "1.3"]},
+        "sessionTickets": {"const": false}
+      }
+    },
+    "forwardAuthClass": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["address", "requestHeaders", "stripAfter", "maxResponseBytes"],
+      "properties": {
+        "address": {"type": "string", "minLength": 1, "pattern": "^https?://", "format": "uri"},
+        "requestHeaders": {
+          "type": "array",
+          "minItems": 0,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1, "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$"}
+        },
+        "stripAfter": {
+          "type": "array",
+          "minItems": 0,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1, "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$"}
+        },
+        "maxResponseBytes": {"type": "integer", "minimum": 1, "maximum": 2147483647}
+      }
+    },
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["namespace", "dnsGroup", "proxied", "ports", "protection"],
+      "properties": {
+        "namespace": {"type": "string", "minLength": 1, "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$"},
+        "dnsGroup": {"type": "string", "minLength": 1, "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$"},
+        "proxied": {"type": "boolean"},
+        "ports": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/definitions/portNumber"}},
+        "protection": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?:public|deny|(?:mtls|oidc|oidcCallback):[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?)$"
+        },
+        "deny": {"$ref": "#/definitions/deny"},
+        "identities": {"type": "array", "minItems": 0, "uniqueItems": true, "items": {"$ref": "#/definitions/identity"}},
+        "identityConstraints": {
+          "type": "object",
+          "minProperties": 0,
+          "propertyNames": {"$ref": "#/definitions/identity"},
+          "additionalProperties": {"$ref": "#/definitions/identityConstraint"}
+        },
+        "exceptions": {"type": "array", "minItems": 0, "uniqueItems": true, "items": {"$ref": "#/definitions/exception"}},
+        "delegate": {"type": "array", "minItems": 0, "uniqueItems": true, "items": {"$ref": "#/definitions/delegation"}},
+        "crowdsecExemptPaths": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/definitions/path"}}
+      },
+      "allOf": [
+        {
+          "if": {"required": ["protection"], "properties": {"protection": {"pattern": "^mtls:"}}},
+          "then": {"required": ["identities"]},
+          "else": {"not": {"anyOf": [{"required": ["identities"]}, {"required": ["identityConstraints"]}]}}
+        },
+        {"if": {"required": ["exceptions"]}, "then": {"properties": {"protection": {"pattern": "^oidc:"}}}}
+      ]
+    },
+    "deny": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "prefixes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/definitions/path"}},
+        "exact": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/definitions/path"}}
+      }
+    },
+    "identityConstraint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["methods", "paths"],
+      "properties": {
+        "methods": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/definitions/method"}},
+        "paths": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/definitions/path"}}
+      }
+    },
+    "exception": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "methods", "forwardAuth"],
+      "properties": {
+        "path": {"$ref": "#/definitions/path"},
+        "methods": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/definitions/method"}},
+        "forwardAuth": {"type": "string", "minLength": 1, "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$"}
+      }
+    },
+    "delegation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["namespace", "paths", "methods", "forwardAuth"],
+      "properties": {
+        "namespace": {"type": "string", "minLength": 1, "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$"},
+        "paths": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/definitions/path"}},
+        "methods": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/definitions/method"}},
+        "forwardAuth": {"type": "string", "minLength": 1, "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$"},
+        "rewrite": {"$ref": "#/definitions/path"}
+      }
+    },
+    "lanBackend": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cidr", "ports"],
+      "properties": {
+        "cidr": {"$ref": "#/definitions/cidr"},
+        "ports": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/definitions/portNumber"}}
+      }
+    },
+    "authClass": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "issuer",
+        "clientID",
+        "scopes",
+        "callback",
+        "groups",
+        "softExpiry",
+        "hardExpiry",
+        "cookieDomain",
+        "redirectHosts"
+      ],
+      "properties": {
+        "issuer": {"type": "string", "minLength": 1, "pattern": "^https://", "format": "uri"},
+        "clientID": {"type": "string", "minLength": 1},
+        "scopes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1},
+          "contains": {"const": "openid"}
+        },
+        "callback": {"type": "string", "minLength": 1, "pattern": "^https://", "format": "uri"},
+        "groups": {"type": "array", "minItems": 0, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "softExpiry": {"type": "string", "minLength": 1},
+        "hardExpiry": {"type": "string", "minLength": 1},
+        "cookieDomain": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\.?[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?)+$",
+          "maxLength": 254
+        },
+        "redirectHosts": {
+          "type": "array",
+          "minItems": 0,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?)+$",
+            "maxLength": 253
+          }
+        }
+      }
+    },
+    "deviceTrust": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["caConfigMap", "exceptions"],
+      "properties": {
+        "caConfigMap": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?)*$",
+          "maxLength": 253
+        },
+        "exceptions": {
+          "type": "array",
+          "minItems": 0,
+          "uniqueItems": true,
+          "items": {"$ref": "#/definitions/deviceException"}
+        }
+      }
+    },
+    "deviceException": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["service", "port", "expires"],
+      "properties": {
+        "service": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?/[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$"
+        },
+        "port": {"$ref": "#/definitions/portNumber"},
+        "expires": {"type": "string", "minLength": 1, "format": "date-time"}
+      }
+    },
+    "defaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["crowdsec", "limits", "compression"],
+      "properties": {
+        "crowdsec": {"type": "boolean"},
+        "limits": {"$ref": "#/definitions/limits"},
+        "compression": {"$ref": "#/definitions/compression"}
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["perRouteClient", "perRouteHost"],
+      "properties": {
+        "perRouteClient": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["perMinute", "perSecondSlot", "inFlight"],
+          "properties": {
+            "perMinute": {"type": "integer", "minimum": 1, "maximum": 2147483647},
+            "perSecondSlot": {"type": "integer", "minimum": 1, "maximum": 2147483647},
+            "inFlight": {"type": "integer", "minimum": 1, "maximum": 2147483647}
+          }
+        },
+        "perRouteHost": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["inFlight"],
+          "properties": {"inFlight": {"type": "integer", "minimum": 1, "maximum": 2147483647}}
+        }
+      }
+    },
+    "compression": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["encodings", "minBytes"],
+      "properties": {
+        "encodings": {"type": "array", "minItems": 0, "uniqueItems": true, "items": {"enum": ["zstd", "br", "gzip"]}},
+        "minBytes": {"type": "integer", "minimum": 0, "maximum": 2147483647}
+      }
+    }
+  }
+}
