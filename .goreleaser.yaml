@@ -1,0 +1,27 @@
+version: 2
+project_name: gatehouse
+builds:
+  - id: all
+    main: ./cmd/gatehouse
+    binary: gatehouse
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+archives:
+  - id: all
+    ids: [all]
+    formats: [tar.gz]
+    files: [LICENSE, README.md, examples/**, internal/config/schema.json]
+checksum:
+  name_template: checksums.txt
+changelog:
+  sort: asc
+release:
+  github:
+    owner: zekihan
+    name: gatehouse
+  ids: [all]
