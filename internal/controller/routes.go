@@ -491,17 +491,12 @@ func (c *compiler) validHeader(name, value string) bool {
 	if !validToken(name) || strings.ContainsAny(value, "\r\n\x00") {
 		return false
 	}
-	name = strings.ToLower(strings.ReplaceAll(name, "_", "-"))
-	for _, prefix := range []string{"x-forwarded-", "x-mtls-", "x-auth-request-", "x-authentik-"} {
-		if strings.HasPrefix(name, prefix) {
-			return false
-		}
+	name = config.FoldHeader(name)
+	if config.ReservedHeader(name) {
+		return false
 	}
 	switch name {
-	case "x-real-ip",
-		"remote-user",
-		"x-noqer-edge-auth",
-		"connection",
+	case "connection",
 		"upgrade",
 		"transfer-encoding",
 		"host",
@@ -515,7 +510,7 @@ func (c *compiler) validHeader(name, value string) bool {
 		return false
 	}
 	for _, port := range c.cfg.Ports {
-		if port.EdgeSecret != nil && strings.EqualFold(name, port.EdgeSecret.Header) {
+		if port.EdgeSecret != nil && name == config.FoldHeader(port.EdgeSecret.Header) {
 			return false
 		}
 	}

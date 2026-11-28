@@ -2,7 +2,9 @@ package dataplane
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net/http"
@@ -23,38 +25,25 @@ const (
 	expiryHeader   = "X-Mtls-Not-After"
 )
 
-func compileMTLS(host config.Host, route snapshot.Route) http.Handler {
+type mtlsPolicy struct {
+	handler http.Handler
+	anchors []string
+}
+
+func compileMTLS(host config.Host, route snapshot.Route) *mtlsPolicy {
 	rule := route.MTLS
 	if rule == nil {
 		return nil
 	}
 	prefix := rule.IdentityPrefix
+	want := "urn:noqer:mtls:" + strings.TrimPrefix(host.Protection, "mtls:") + ":"
 	if prefix == "" {
-		prefix = "urn:noqer:mtls:" + strings.TrimPrefix(host.Protection, "mtls:") + ":"
+		prefix = want
 	}
-	identities := make([]string, 0, len(rule.Identities))
-	constraints := make(map[string]any)
-	for _, identity := range rule.Identities {
-		if !slices.Contains(host.Identities, identity) {
-			continue
-		}
-		identities = append(identities, identity)
-		registry, restricted := host.IdentityConstraints[identity]
-		local, narrowed := rule.Constraints[identity]
-		if restricted && narrowed {
-			local.Methods = intersection(registry.Methods, local.Methods)
-			local.Paths = intersection(registry.Paths, local.Paths)
-		} else if restricted {
-			local = registry
-		}
-		if restricted || narrowed {
-			if len(local.Methods) == 0 || len(local.Paths) == 0 {
-				identities = identities[:len(identities)-1]
-				continue
-			}
-			constraints[identity] = map[string]any{"methods": local.Methods, "paths": local.Paths}
-		}
+	if prefix != want {
+		return nil
 	}
+	identities, constraints := allowedIdentities(host, rule)
 	blocked := make([]any, 0, len(rule.BlockedFingerprints))
 	for _, fp := range rule.BlockedFingerprints {
 		blocked = append(blocked, map[string]any{"fingerprint": fp})
@@ -82,7 +71,36 @@ func compileMTLS(host config.Host, route snapshot.Route) http.Handler {
 	if err != nil {
 		return nil
 	}
-	return handler
+	return &mtlsPolicy{handler: handler, anchors: rule.TrustedAnchors}
+}
+
+func allowedIdentities(
+	host config.Host,
+	rule *snapshot.MTLSPolicy,
+) ([]string, map[string]config.IdentityConstraint) {
+	identities := make([]string, 0, len(rule.Identities))
+	constraints := make(map[string]config.IdentityConstraint)
+	for _, identity := range rule.Identities {
+		if !slices.Contains(host.Identities, identity) {
+			continue
+		}
+		registry, restricted := host.IdentityConstraints[identity]
+		local, narrowed := rule.Constraints[identity]
+		if restricted && narrowed {
+			local.Methods = intersection(registry.Methods, local.Methods)
+			local.Paths = intersection(registry.Paths, local.Paths)
+		} else if restricted {
+			local = registry
+		}
+		if restricted || narrowed {
+			if len(local.Methods) == 0 || len(local.Paths) == 0 {
+				continue
+			}
+			constraints[identity] = local
+		}
+		identities = append(identities, identity)
+	}
+	return identities, constraints
 }
 
 func intersection(a, b []string) []string {
@@ -106,38 +124,57 @@ func acceptMTLS(_ http.ResponseWriter, r *http.Request) {
 func authorizeMTLS(
 	w http.ResponseWriter,
 	r *http.Request,
-	handler http.Handler,
+	policy *mtlsPolicy,
 	host *edgeHost,
-) bool {
-	if handler == nil || r.TLS == nil || r.TLS.Version < host.tls.MinVersion ||
+) (streamIdentity, bool) {
+	if policy == nil || host.tls == nil || r.TLS == nil || r.TLS.Version < host.tls.MinVersion ||
 		len(r.TLS.VerifiedChains) == 0 {
 		http.Error(w, "Forbidden", http.StatusForbidden)
-		return false
+		return streamIdentity{}, false
 	}
-	// Re-verify an established connection if the active trust changed.
+	state := *r.TLS
 	if original, ok := r.Context().Value(connKey{}).(*sourceConn); ok &&
-		(original.roots == nil || !original.roots.Equal(host.tls.ClientCAs)) {
-		chains := original.verify(r, host.tls.ClientCAs)
-		if len(chains) == 0 {
-			http.Error(w, "Forbidden", http.StatusForbidden)
-			return false
-		}
-		state := *r.TLS
-		state.VerifiedChains = chains
-		r.TLS = &state
+		original.trustKey != host.authKey {
+		state.VerifiedChains = original.verify(r, host)
 	}
 	var accepted bool
-	handler.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), mtlsKey{}, &accepted)))
-	return accepted
+	probe := r.WithContext(context.WithValue(r.Context(), mtlsKey{}, &accepted))
+	probe.TLS = &state
+	now := time.Now()
+	policy.handler.ServeHTTP(w, probe)
+	if !accepted {
+		return streamIdentity{}, false
+	}
+	return streamIdentity{
+		name:   r.Header.Get(identityHeader),
+		anchor: policy.acceptedAnchor(state.VerifiedChains, now),
+	}, true
 }
 
-func (c *sourceConn) verify(r *http.Request, roots *x509.CertPool) [][]*x509.Certificate {
+// The plugin forwards the leaf facts but does not expose its selected anchor.
+// It chooses the first pinned chain valid within its 60-second clock skew.
+func (p *mtlsPolicy) acceptedAnchor(chains [][]*x509.Certificate, now time.Time) [32]byte {
+	for _, chain := range chains {
+		fp := sha256.Sum256(chain[len(chain)-1].Raw)
+		if slices.Contains(p.anchors, hex.EncodeToString(fp[:])) &&
+			!slices.ContainsFunc(chain, func(cert *x509.Certificate) bool {
+				return now.Before(cert.NotBefore.Add(-time.Minute)) ||
+					now.After(cert.NotAfter.Add(time.Minute))
+			}) {
+			return fp
+		}
+	}
+	return [32]byte{}
+}
+
+func (c *sourceConn) verify(r *http.Request, host *edgeHost) [][]*x509.Certificate {
 	c.verifyMu.Lock()
 	defer c.verifyMu.Unlock()
-	if c.verifyRoots == roots {
+	if c.verifyDigest == host.snapshotDigest && c.verifyKey == host.authKey {
 		return c.verified
 	}
 	peer := r.TLS.PeerCertificates
+	roots := host.tls.ClientCAs
 	var chains [][]*x509.Certificate
 	if len(peer) != 0 && roots != nil {
 		intermediates := x509.NewCertPool()
@@ -154,7 +191,7 @@ func (c *sourceConn) verify(r *http.Request, roots *x509.CertPool) [][]*x509.Cer
 			chains = nil
 		}
 	}
-	c.verifyRoots, c.verified = roots, chains
+	c.verifyDigest, c.verifyKey, c.verified = host.snapshotDigest, host.authKey, chains
 	return chains
 }
 
@@ -164,18 +201,33 @@ var authTransport = &http.Transport{
 	TLSHandshakeTimeout:   defaultDeadline,
 }
 
-func (s *compiled) forward(w http.ResponseWriter, r *http.Request, class string) bool {
+type authResult struct {
+	delegation *config.Delegation
+	strip      []string
+}
+
+func (a authResult) stripCredentials(h http.Header) {
+	for _, name := range a.strip {
+		deleteHeader(h, config.FoldHeader(name))
+	}
+}
+
+func (s *compiled) forward(
+	w http.ResponseWriter,
+	r *http.Request,
+	class string,
+) (authResult, bool) {
 	cfg, ok := s.forwardAuth[class]
 	if !ok {
 		http.Error(w, "Service Unavailable", http.StatusServiceUnavailable)
-		return false
+		return authResult{}, false
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), defaultDeadline)
 	defer cancel()
 	probe, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.Address, nil)
 	if err != nil {
 		http.Error(w, "Service Unavailable", http.StatusServiceUnavailable)
-		return false
+		return authResult{}, false
 	}
 	for _, name := range cfg.RequestHeaders {
 		if !s.reserved(name) {
@@ -191,12 +243,12 @@ func (s *compiled) forward(w http.ResponseWriter, r *http.Request, class string)
 	probe.Header.Set("X-Forwarded-Uri", r.RequestURI)
 	probe.Header.Set("X-Forwarded-Method", r.Method)
 	if !checkForwardResponse(w, probe, cfg.MaxResponseBytes) {
-		return false
+		return authResult{}, false
 	}
-	for _, name := range cfg.StripAfter {
-		r.Header.Del(name)
-	}
-	return true
+	result := authResult{strip: cfg.StripAfter}
+	result.stripCredentials(r.Header)
+	result.stripCredentials(r.Trailer)
+	return result, true
 }
 
 func checkForwardResponse(w http.ResponseWriter, probe *http.Request, maxBytes int) bool {
@@ -232,30 +284,35 @@ func checkForwardResponse(w http.ResponseWriter, probe *http.Request, maxBytes i
 
 func (s *compiled) authorize(
 	w http.ResponseWriter, req *http.Request, registry config.Host, info RequestInfo,
-) (string, bool) {
+) (authResult, bool) {
 	kind, class, _ := strings.Cut(registry.Protection, ":")
 	if kind == "oidcCallback" {
 		s.oidc[class].Callback(w, req, info.Host, info.Path, time.Now())
-		return "", false
+		return authResult{}, false
 	}
 	if kind == "oidc" && isAuthPath(info.Path) {
-		return "", s.oidc[class].Authorize(w, req, info.Host, info.Path, time.Now())
+		return authResult{}, s.oidc[class].Authorize(w, req, info.Host, info.Path, time.Now())
 	}
 	rule := info.Route
-	if grant := delegatedPath(registry, info.Path, req.Method); grant != nil {
+	grant, delegated := delegatedPath(registry, info.Path, req.Method)
+	if grant != nil {
 		return s.authorizeDelegation(w, req, grant, info)
 	}
 	if rule.Namespace != "" && rule.Namespace != registry.Namespace {
 		http.Error(w, "Forbidden", http.StatusForbidden)
-		return "", false
+		return authResult{}, false
 	}
 	if rule.ForwardAuth != "" {
-		return "", s.authorizeException(w, req, registry, info)
+		return s.authorizeException(w, req, registry, info)
+	}
+	if delegated {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return authResult{}, false
 	}
 	if kind == "oidc" {
-		return "", s.oidc[class].Authorize(w, req, info.Host, info.Path, time.Now())
+		return authResult{}, s.oidc[class].Authorize(w, req, info.Host, info.Path, time.Now())
 	}
-	return "", true
+	return authResult{}, true
 }
 
 func (s *compiled) authorizeRequest(
@@ -264,15 +321,15 @@ func (s *compiled) authorizeRequest(
 	registry config.Host,
 	info RequestInfo,
 	record *requestRecord,
-) (string, bool) {
-	rewrite, allowed := s.authorize(w, req, registry, info)
+) (authResult, bool) {
+	result, allowed := s.authorize(w, req, registry, info)
 	if !allowed && (w.status == 0 || w.status >= http.StatusBadRequest) {
 		record.deny = "auth"
 	}
 	if allowed && strings.HasPrefix(registry.Protection, "oidc:") {
 		record.identity = req.Header.Get("X-Auth-Request-User")
 	}
-	return rewrite, allowed
+	return result, allowed
 }
 
 func isAuthPath(path string) bool {
@@ -289,19 +346,19 @@ func nativeAuthRoute(registry config.Host, routes int, path string) *route {
 	return nil
 }
 
-func delegatedPath(registry config.Host, path, method string) *config.Delegation {
-	var fallback *config.Delegation
+func delegatedPath(registry config.Host, path, method string) (*config.Delegation, bool) {
+	reserved := false
 	for i := range registry.Delegate {
 		grant := &registry.Delegate[i]
 		if !slices.Contains(grant.Paths, path) {
 			continue
 		}
 		if slices.Contains(grant.Methods, method) {
-			return grant
+			return grant, true
 		}
-		fallback = grant
+		reserved = true
 	}
-	return fallback
+	return nil, reserved
 }
 
 func (s *compiled) authorizeDelegation(
@@ -309,13 +366,15 @@ func (s *compiled) authorizeDelegation(
 	req *http.Request,
 	grant *config.Delegation,
 	info RequestInfo,
-) (string, bool) {
-	if grant.Namespace == info.Route.Namespace && req.URL.EscapedPath() == info.Path &&
-		slices.Contains(grant.Methods, req.Method) {
-		return grant.Rewrite, s.forward(w, req, grant.ForwardAuth)
+) (authResult, bool) {
+	if grant.Namespace == info.Route.Namespace && exactGrantMatch(req, info) &&
+		grant.ForwardAuth == info.Route.ForwardAuth {
+		result, allowed := s.forward(w, req, grant.ForwardAuth)
+		result.delegation = grant
+		return result, allowed
 	}
 	http.Error(w, "Forbidden", http.StatusForbidden)
-	return "", false
+	return authResult{}, false
 }
 
 func (s *compiled) authorizeException(
@@ -323,15 +382,24 @@ func (s *compiled) authorizeException(
 	req *http.Request,
 	registry config.Host,
 	info RequestInfo,
-) bool {
+) (authResult, bool) {
+	if info.Route.Namespace != registry.Namespace {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return authResult{}, false
+	}
 	for _, ex := range registry.Exceptions {
 		if ex.ForwardAuth == info.Route.ForwardAuth && ex.Path == info.Path &&
-			req.URL.EscapedPath() == ex.Path && slices.Contains(ex.Methods, req.Method) {
+			exactGrantMatch(req, info) && slices.Contains(ex.Methods, req.Method) {
 			return s.forward(w, req, info.Route.ForwardAuth)
 		}
 	}
 	http.Error(w, "Service Unavailable", http.StatusServiceUnavailable)
-	return false
+	return authResult{}, false
+}
+
+func exactGrantMatch(req *http.Request, info RequestInfo) bool {
+	return info.Route.Exact && info.Route.Path == info.Path &&
+		info.Route.Method == req.Method && req.URL.EscapedPath() == info.Path
 }
 
 func applyFilter(h http.Header, filter snapshot.HeaderFilter, reserved func(string) bool) {
@@ -339,7 +407,7 @@ func applyFilter(h http.Header, filter snapshot.HeaderFilter, reserved func(stri
 		if reserved != nil && reserved(name) {
 			return false
 		}
-		switch foldHeader(name) {
+		switch config.FoldHeader(name) {
 		case "connection",
 			"keep-alive",
 			"proxy-connection",

@@ -101,8 +101,12 @@ func (p *edgePort) cloudflareIP(
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return netip.Addr{}
 	}
+	// The operator's trust check and the plugin must see the same peer,
+	// including for scoped or IPv4-mapped IPv6 socket addresses.
 	var ip netip.Addr
-	p.resolver.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), edgeIPKey{}, &ip)))
+	probe := r.Clone(context.WithValue(r.Context(), edgeIPKey{}, &ip))
+	probe.RemoteAddr = netip.AddrPortFrom(peer, 0).String()
+	p.resolver.ServeHTTP(w, probe)
 	return ip
 }
 
@@ -118,30 +122,16 @@ func (p *edgePort) validSecret(values []string) bool {
 	return ok == 1
 }
 
-func foldHeader(name string) string {
-	return strings.ToLower(strings.ReplaceAll(name, "_", "-"))
-}
-
 func (s *compiled) reserved(name string) bool {
-	folded := foldHeader(name)
-	switch folded {
-	case "x-real-ip", "remote-user", "remote-email", "remote-groups", "remote-name",
-		"forwarded", "cf-connecting-ip", "cf-connecting-ipv6", "cf-pseudo-ipv4",
-		"eo-connecting-ip", "true-client-ip", "x-client-ip", "x-cluster-client-ip",
-		"x-original-forwarded-for", "fastly-client-ip", "x-is-trusted",
-		"x-noqer-edge-auth":
-		return true
-	}
-	return s.edgeHeaders[folded] || strings.HasPrefix(folded, "x-forwarded-") ||
-		strings.HasPrefix(folded, "x-auth-request-") || strings.HasPrefix(folded, "x-authentik-") ||
-		strings.HasPrefix(folded, "x-mtls-")
+	folded := config.FoldHeader(name)
+	return s.edgeHeaders[folded] || config.ReservedHeader(folded)
 }
 
 func nominated(headers http.Header, name string) bool {
-	key := foldHeader(name)
+	key := config.FoldHeader(name)
 	for _, line := range headers.Values("Connection") {
 		for option := range strings.SplitSeq(line, ",") {
-			if foldHeader(strings.TrimSpace(option)) == key {
+			if config.FoldHeader(strings.TrimSpace(option)) == key {
 				return true
 			}
 		}
@@ -152,21 +142,34 @@ func nominated(headers http.Header, name string) bool {
 func (s *compiled) stripHeaders(h http.Header) {
 	// Keep the protocol's upgrade negotiation, while removing any arbitrary
 	// headers that the client nominates as connection-specific.
+	upgrade := false
 	for _, line := range h.Values("Connection") {
 		for option := range strings.SplitSeq(line, ",") {
-			name := foldHeader(strings.TrimSpace(option))
-			if name != "connection" && name != "upgrade" {
-				for candidate := range h {
-					if foldHeader(candidate) == name {
-						delete(h, candidate)
-					}
-				}
+			name := config.FoldHeader(strings.TrimSpace(option))
+			if name == "upgrade" {
+				upgrade = true
+				continue
 			}
+			deleteHeader(h, name)
 		}
+	}
+	h.Del("Connection")
+	if upgrade {
+		h.Set("Connection", "Upgrade")
+	} else {
+		h.Del("Upgrade")
 	}
 	for name := range h {
 		if s.reserved(name) {
 			delete(h, name)
+		}
+	}
+}
+
+func deleteHeader(h http.Header, folded string) {
+	for candidate := range h {
+		if config.FoldHeader(candidate) == folded {
+			delete(h, candidate)
 		}
 	}
 }
