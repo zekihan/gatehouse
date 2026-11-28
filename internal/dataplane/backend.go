@@ -59,7 +59,7 @@ func (r *route) addBackend(
 	value := newBackend(cfg, input, r.rule.Deadlines, false)
 	r.total += uint64(weight)
 	r.backends = append(r.backends, weighted{end: r.total, value: value})
-	if value != nil {
+	if value != nil && len(value.targets) != 0 {
 		pooled := value.transport(false)
 		fresh := value.transport(true)
 		state.transports = append(state.transports, pooled, fresh)
@@ -101,7 +101,7 @@ func newBackend(
 	if !b.initTLS(cfg.DeviceTrust, input) {
 		return nil
 	}
-	if !b.initEndpoints(cfg.LANBackends, input) {
+	if !b.initEndpoints(cfg.LANBackends, input) || stream && len(b.targets) == 0 {
 		return nil
 	}
 	return b
@@ -129,7 +129,7 @@ func (b *backend) initEndpoints(allows []config.LANBackend, input *snapshot.Back
 			b.targets = append(b.targets, endpoint{addr: addr, id: hex.EncodeToString(hash[:8])})
 		}
 	}
-	return len(b.targets) != 0
+	return true
 }
 
 func (b *backend) initTLS(trust config.DeviceTrust, input *snapshot.Backend) bool {

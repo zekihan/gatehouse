@@ -263,6 +263,10 @@ func (p *Plane) proxyRequest(
 		return
 	}
 	record.backend = target.name + ":" + strconv.Itoa(int(target.port))
+	if len(target.targets) == 0 {
+		http.Error(w, "Service Unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	// Keep the inbound request immutable for logging and authorization.
 	r := req.Clone(req.Context())
 	applyRewrite(r, route, path, auth.delegation)

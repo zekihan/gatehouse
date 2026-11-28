@@ -313,6 +313,10 @@ func TestRouteHeadersAndRewrites(t *testing.T) {
 					Set: map[string]string{"X-Safe": "set", "X_Real_Ip": "wrong"},
 				},
 			},
+			{
+				Name: "scheduled", Path: "/scheduled", Exact: true,
+				Backend: &snapshot.Backend{Service: "ns/scheduled", Port: 8080},
+			},
 			{Name: "invalid", Path: "/invalid", Exact: true},
 			{Name: "protected", Path: "/private", Exact: true, Backend: be},
 			{
@@ -349,6 +353,7 @@ func TestRouteHeadersAndRewrites(t *testing.T) {
 		{path: "/else/../%70rivate", code: 403},
 		{path: "/private%2Fa", code: 400},
 		{path: "/%252e", code: 400},
+		{path: "/scheduled", code: http.StatusServiceUnavailable},
 		{path: "/invalid", code: 500},
 		{path: "/", authority: "other.test", code: 421},
 	} {
