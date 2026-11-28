@@ -3,6 +3,7 @@
 package integration
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -12,6 +13,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io"
@@ -53,16 +55,18 @@ const (
 )
 
 type oidcFixture struct {
-	cert     *snapshot.KeyPair
-	roots    *x509.CertPool
-	issuer   string
-	dockerID string
-	dir      string
-	spec     string
-	password string
-	secret   string
-	jwks     atomic.Int32
-	discover atomic.Int32
+	cert        *snapshot.KeyPair
+	roots       *x509.CertPool
+	issuer      string
+	dockerID    string
+	dir         string
+	spec        string
+	password    string
+	secret      string
+	jwks        atomic.Int32
+	discover    atomic.Int32
+	tokenStatus atomic.Int64
+	tokenError  atomic.Pointer[string]
 }
 
 func newOIDCFixture(t *testing.T) *oidcFixture {
@@ -98,7 +102,8 @@ func newOIDCFixture(t *testing.T) *oidcFixture {
 		t.Fatal(err)
 	}
 	proxy := &httputil.ReverseProxy{
-		ErrorLog: log.New(io.Discard, "", 0),
+		ModifyResponse: f.recordTokenResponse,
+		ErrorLog:       log.New(io.Discard, "", 0),
 		Rewrite: func(r *httputil.ProxyRequest) {
 			r.SetURL(target)
 			r.Out.Host = r.In.Host
@@ -123,9 +128,59 @@ func newOIDCFixture(t *testing.T) *oidcFixture {
 	issuer.TLS = &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12}
 	issuer.StartTLS()
 	t.Cleanup(issuer.Close)
+	t.Cleanup(func() {
+		if t.Failed() {
+			code := f.tokenError.Load()
+			if code == nil {
+				unknown := ""
+				code = &unknown
+			}
+			t.Logf("Authelia exchange HTTP status=%d error=%q discovery=%d JWKS=%d",
+				f.tokenStatus.Load(), *code, f.discover.Load(), f.jwks.Load())
+		}
+	})
 	f.issuer = issuer.Listener.Addr().String()
 	f.waitForIssuer(t, "initial")
 	return f
+}
+
+func (f *oidcFixture) recordTokenResponse(resp *http.Response) error {
+	if resp.Request.URL.Path != "/api/oidc/token" {
+		return nil
+	}
+	f.tokenStatus.Store(int64(resp.StatusCode))
+	if resp.StatusCode == http.StatusOK {
+		return nil
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if err := resp.Body.Close(); err != nil {
+		return err
+	}
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	var failure struct {
+		Code string `json:"error"`
+	}
+	if err := json.Unmarshal(body, &failure); err == nil {
+		code := safeOAuthError(failure.Code)
+		f.tokenError.Store(&code)
+	}
+	return nil
+}
+
+func safeOAuthError(code string) string {
+	switch code {
+	case "invalid_request", "invalid_client", "invalid_grant", "unauthorized_client",
+		"access_denied", "server_error", "temporarily_unavailable", "consent_required",
+		"interaction_required", "login_required", "invalid_scope":
+		return code
+	case "":
+		return "(none)"
+	default:
+		return "(unknown)"
+	}
 }
 
 func (f *oidcFixture) rotateSigningKey(t *testing.T) {

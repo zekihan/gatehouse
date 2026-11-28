@@ -241,7 +241,12 @@ func authorizationCallback(
 		t.Fatal("Authelia did not save consent")
 	}
 	consented := request(t, client, http.MethodGet, result.Data.Redirect, nil, nil)
-	return requireRedirect(t, consented, callbackHost).String()
+	callback := requireRedirect(t, consented, callbackHost)
+	if callback.Query().Get("code") == "" || callback.Query().Has("error") {
+		t.Fatalf("Authelia did not issue an authorization code after consent: %s",
+			safeOAuthError(callback.Query().Get("error")))
+	}
+	return callback.String()
 }
 
 func completeLogin(t *testing.T, client *http.Client, callback, target string) *http.Cookie {
