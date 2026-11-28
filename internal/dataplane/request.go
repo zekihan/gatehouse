@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/zekihan/gatehouse/internal/config"
+	"github.com/zekihan/gatehouse/internal/oidclogin"
 	"github.com/zekihan/gatehouse/internal/snapshot"
 )
 
@@ -77,6 +78,9 @@ func (p *Plane) serveTLSRequest(
 		return
 	}
 	route := matchRoute(host.routes, req, path)
+	if route == nil {
+		route = nativeAuthRoute(registry, len(host.routes), path)
+	}
 	if route == nil {
 		if isMTLS(registry.Protection) && len(host.routes) == 0 {
 			reject(w, record, "mtls_policy", http.StatusForbidden)
@@ -175,9 +179,8 @@ func (p *Plane) applyPolicies(
 			defer release()
 		}
 	}
-	delegated, allows := state.authorize(p, w, req, registry, info)
+	delegated, allows := state.authorizeRequest(w, req, registry, info, record)
 	if !allows {
-		record.deny = "auth"
 		return
 	}
 
@@ -249,6 +252,7 @@ func (p *Plane) proxyRequest(
 		r.Host = rewrite.Host
 	}
 	applyFilter(r.Header, route.rule.RequestHeaders, state.reserved)
+	oidclogin.StripCookies(r.Header)
 	setForwarded(r, record.client)
 	r.Header.Set("X-Forwarded-Host", req.Host)
 	compression := state.compression

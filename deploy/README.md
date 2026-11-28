@@ -19,6 +19,16 @@ a RoleBinding. Apply the same pattern for additional public trust ConfigMaps.
 For a cross-namespace Gateway API reference, the target namespace also
 needs a ReferenceGrant.
 
+For each OIDC class, `gatehouse-bootstrap` supplies
+`oidc-<class>-client-secret`, `cookie-<class>-current`, and
+`cookie-<class>-previous`. Cookie keys are base64-encoded 32-byte values.
+Register each callback as a Gatehouse-owned HTTPS listener with its
+certificate. Gatehouse handles the configured callback path directly.
+Browser probes can send `Accept: text/html` to `/oauth2/sign_in` on a
+protected host to check the login redirect. The session cookie is named
+`__Secure-gatehouse-session-<class>`. `POST /oauth2/sign_out` clears the
+class session in the browser.
+
 The generated controller Role permits Lease operations in the Gatehouse
 namespace. Keep that namespace and its replica label under operator control.
 Gatehouse writes acknowledgements named `gatehouse-ack-<pod>` every ten

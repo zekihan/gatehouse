@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/zekihan/gatehouse/internal/config"
+	"github.com/zekihan/gatehouse/internal/oidclogin"
 	"github.com/zekihan/gatehouse/internal/snapshot"
 )
 
@@ -42,13 +43,13 @@ type RequestInfo struct {
 }
 
 // Options connects independently managed request policies to the data plane.
-// Policies return false after writing a refusal. A nil OIDC hook fails closed.
+// Policies return false after writing a refusal.
 type Options struct {
-	OnListening func()
-	AccessLog   io.Writer
-	CrowdSec    func(http.ResponseWriter, *http.Request, RequestInfo) bool
-	Limits      func(http.ResponseWriter, *http.Request, RequestInfo) (release func(), allowed bool)
-	OIDC        func(http.ResponseWriter, *http.Request, RequestInfo) bool
+	OnListening   func()
+	AccessLog     io.Writer
+	CrowdSec      func(http.ResponseWriter, *http.Request, RequestInfo) bool
+	Limits        func(http.ResponseWriter, *http.Request, RequestInfo) (release func(), allowed bool)
+	OIDCTransport http.RoundTripper
 }
 
 type Plane struct {
@@ -65,6 +66,7 @@ type compiled struct {
 	registry    map[string]config.Host
 	edgeHeaders map[string]bool
 	forwardAuth map[string]config.ForwardAuthClass
+	oidc        map[string]*oidclogin.Class
 	compression config.Compression
 	transports  []*http.Transport
 }
@@ -112,6 +114,15 @@ func (p *Plane) Update(input *snapshot.Snapshot) error {
 		digest: input.Digest, ports: make(map[uint16]*edgePort), registry: input.Config.Hosts,
 		edgeHeaders: make(map[string]bool), forwardAuth: input.Config.ForwardAuthClasses,
 		compression: input.Config.Defaults.Compression,
+		oidc:        make(map[string]*oidclogin.Class, len(input.Config.AuthClasses)),
+	}
+	for name, class := range input.Config.AuthClasses {
+		var previous *oidclogin.Class
+		if old != nil {
+			previous = old.oidc[name]
+		}
+		next.oidc[name] = oidclogin.NewClass(name, class, input.DataPlane.OIDCSecrets,
+			p.opts.OIDCTransport, previous)
 	}
 	for number, options := range input.Config.Ports {
 		port, err := newPort(options, input.DataPlane.EdgeSecrets)

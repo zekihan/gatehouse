@@ -37,3 +37,10 @@ Docker container using the pinned k3s image. It installs the matching Gateway
 API and generated Gatehouse CRDs and runs the controller with a service account
 token scoped to the generated RBAC. The harness uses synthetic certificates,
 credentials, replica readiness, and upstream endpoints.
+
+The OIDC suite starts two Gatehouse replicas against a disposable Authelia
+container. It saves pre-configured consent and verifies silent re-login,
+navigation and form POST expiry, rejection of altered cookies and unlisted
+return destinations, cookie and Authelia signing-key rotation, and logout.
+The fixture uses seconds for session expiry. The operator example uses one
+hour and eight hours.

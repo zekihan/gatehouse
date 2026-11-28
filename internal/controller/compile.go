@@ -97,7 +97,13 @@ func compile(
 }
 
 func (c *compiler) bootstrapInputs() {
-	c.useNamed(key{secrets, c.op.namespace, bootstrapSecret})
+	bootstrap := key{secrets, c.op.namespace, bootstrapSecret}
+	c.useNamed(bootstrap)
+	if values, ok := secretValues(
+		c.objects.get(bootstrap.resource, bootstrap.namespace, bootstrap.name),
+	); ok {
+		c.data.OIDCSecrets = oidcSecrets(c.cfg.AuthClasses, values)
+	}
 	for _, profile := range c.cfg.ClientCertProfiles {
 		c.useNamed(key{secrets, c.op.namespace, profile.CASecret})
 	}
@@ -117,6 +123,22 @@ func (c *compiler) bootstrapInputs() {
 			}
 		}
 	}
+}
+
+func oidcSecrets(classes map[string]config.AuthClass, values map[string][]byte) map[string]string {
+	out := make(map[string]string)
+	for class := range classes {
+		for _, name := range []string{
+			"oidc-" + class + "-client-secret",
+			"cookie-" + class + "-current",
+			"cookie-" + class + "-previous",
+		} {
+			if value, found := values[name]; found {
+				out[name] = string(value)
+			}
+		}
+	}
+	return out
 }
 
 func (c *compiler) finish() (result, error) {

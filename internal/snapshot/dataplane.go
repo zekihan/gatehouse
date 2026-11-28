@@ -13,6 +13,7 @@ type DataPlane struct {
 	Ports       map[uint16]map[string]Host   `json:"ports,omitempty"`
 	Hosts       map[string]Host              `json:"hosts"`
 	EdgeSecrets map[string]map[string]string `json:"edgeSecrets,omitempty"`
+	OIDCSecrets map[string]string            `json:"oidcSecrets,omitempty"`
 }
 
 // Host is keyed by the exact registry hostname. A missing certificate or
