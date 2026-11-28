@@ -109,7 +109,7 @@ func (c *compiler) compileRoute(
 			continue
 		}
 		s := c.status(res, obj)
-		state := outcome{rejected: "NoMatchingListenerHostname"}
+		state := unmatchedParent(ref, parent.listeners)
 		for _, a := range c.listeners[id] {
 			specificity := hostnameSpecificity(hosts, a.host)
 			if specificity < 0 || !selectsAttachment(ref, a) ||
@@ -136,9 +136,23 @@ func (c *compiler) compileRoute(
 	}
 }
 
+func unmatchedParent(ref gateway.ParentReference, listeners []*listenerStatus) outcome {
+	if (ref.SectionName != nil || ref.Port != nil) &&
+		!slices.ContainsFunc(listeners, func(listener *listenerStatus) bool {
+			return selectsListener(ref, listener)
+		}) {
+		return outcome{rejected: string(gateway.RouteReasonNoMatchingParent)}
+	}
+	return outcome{rejected: string(gateway.RouteReasonNoMatchingListenerHostname)}
+}
+
 func selectsAttachment(ref gateway.ParentReference, a attachment) bool {
-	return (ref.SectionName == nil || string(*ref.SectionName) == a.status.name) &&
-		(ref.Port == nil || *ref.Port == int32(a.status.port))
+	return selectsListener(ref, a.status)
+}
+
+func selectsListener(ref gateway.ParentReference, listener *listenerStatus) bool {
+	return (ref.SectionName == nil || string(*ref.SectionName) == listener.name) &&
+		(ref.Port == nil || *ref.Port == int32(listener.port))
 }
 
 func hostnameSpecificity(names []gateway.Hostname, host string) int {
