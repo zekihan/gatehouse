@@ -11,7 +11,7 @@ import (
 	"github.com/zekihan/gatehouse/internal/snapshot"
 )
 
-func TestMandatoryDeniesSurviveRouteRemoval(t *testing.T) {
+func TestRegistryDeniesAndInvalidPoliciesStayClosed(t *testing.T) {
 	var requests atomic.Int32
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		requests.Add(1)
@@ -20,13 +20,21 @@ func TestMandatoryDeniesSurviveRouteRemoval(t *testing.T) {
 	t.Cleanup(backend.Close)
 	l, port := newListener(t)
 	cert, roots := makeCertificate(t)
-	routes := []snapshot.Route{{
-		Name: "catch-all", Path: "/", Backend: &snapshot.Backend{
-			Service:   "ns/storage",
-			Port:      80,
-			Endpoints: []string{strings.TrimPrefix(backend.URL, "http://")},
+	upstream := &snapshot.Backend{
+		Service:   "ns/storage",
+		Port:      80,
+		Endpoints: []string{strings.TrimPrefix(backend.URL, "http://")},
+	}
+	routes := []snapshot.Route{
+		{Name: "catch-all", Path: "/", Backend: upstream},
+		{
+			Name:          "restricted",
+			Path:          "/restricted",
+			Exact:         true,
+			Backend:       upstream,
+			InvalidPolicy: true,
 		},
-	}}
+	}
 	host := snapshot.Host{Certificate: cert, Routes: routes}
 	snap := testSnapshot(port, config.Port{Identity: "direct"}, host)
 	registry := snap.Config.Hosts[fixtureHost]
@@ -40,13 +48,13 @@ func TestMandatoryDeniesSurviveRouteRemoval(t *testing.T) {
 	startListener(t, l, plane, port, "")
 	client := testClient(t, l, roots)
 	for _, state := range []struct {
-		name   string
-		routes []snapshot.Route
-		allow  int
+		name              string
+		routes            []snapshot.Route
+		allow, restricted int
 	}{
-		{"cold start", nil, http.StatusNotFound},
-		{"broad route", routes, http.StatusNoContent},
-		{"route removed", nil, http.StatusNotFound},
+		{"cold start", nil, http.StatusNotFound, http.StatusNotFound},
+		{"broad route", routes, http.StatusNoContent, http.StatusServiceUnavailable},
+		{"route removed", nil, http.StatusNotFound, http.StatusNotFound},
 	} {
 		t.Run(state.name, func(t *testing.T) {
 			host.Routes = state.routes
@@ -60,8 +68,9 @@ func TestMandatoryDeniesSurviveRouteRemoval(t *testing.T) {
 				checkRegistryPath(t, client, prefix, http.StatusForbidden)
 				checkRegistryPath(t, client, prefix+"/fixture", http.StatusForbidden)
 			}
+			checkRegistryPath(t, client, "/restricted", state.restricted)
 			if requests.Load() != before {
-				t.Fatal("registry deny forwarded an upstream request")
+				t.Fatal("a denied or invalid route forwarded an upstream request")
 			}
 		})
 	}
