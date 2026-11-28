@@ -7,7 +7,6 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -85,11 +84,14 @@ func runBench(t *testing.T, binary string) {
 	}
 	checkBenchFixture(t, dir)
 
-	features := ""
-	if driver := os.Getenv("GATEHOUSE_BENCH_DRIVER"); driver != "" {
+	driver := os.Getenv("GATEHOUSE_BENCH_DRIVER")
+	features := "proxy,identity,streaming,routing,tls,mtls,forward-auth,uploads,alpn,observability"
+	if driver == "" {
+		driver = filepath.Join(fixtures, "driver.py")
+	} else {
 		features = enabledFeatures(t)
-		startDriver(ctx, t, driver, dir, logFile, ready, env)
 	}
+	startDriver(ctx, t, driver, dir, logFile, ready, env)
 	check := exec.CommandContext(ctx, "bash", filepath.Join(fixtures, "conformance.sh"))
 	check.Env = append(env, "BENCH_FEATURES="+features)
 	output, err := check.CombinedOutput()
@@ -206,7 +208,7 @@ func startDriver(
 		close(done)
 	}()
 	t.Cleanup(func() {
-		_ = cmd.Process.Kill()
+		_ = cmd.Process.Signal(os.Interrupt)
 		<-done
 	})
 	ticker := time.NewTicker(50 * time.Millisecond)
@@ -216,7 +218,15 @@ func startDriver(
 		case <-ctx.Done():
 			t.Fatal("timed out waiting for bench driver readiness")
 		case <-done:
-			t.Fatal(fmt.Errorf("bench driver exited before readiness: %w", waitErr))
+			details, err := os.ReadFile(diagnostics.Name())
+			if err != nil {
+				t.Fatalf(
+					"bench driver exited before readiness: %v (read diagnostics: %v)",
+					waitErr,
+					err,
+				)
+			}
+			t.Fatalf("bench driver exited before readiness: %v\n%s", waitErr, details)
 		case <-ticker.C:
 			if _, err := os.Stat(ready); err == nil {
 				return

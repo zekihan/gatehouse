@@ -16,8 +16,9 @@ import (
 
 // Snapshot pairs an acknowledgement digest with the operator configuration.
 type Snapshot struct {
-	Digest string
-	Config *config.Config
+	Digest    string
+	Config    *config.Config
+	DataPlane *DataPlane
 }
 
 // Input contains the identity and relevant content of one compiler input.

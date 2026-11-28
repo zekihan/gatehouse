@@ -21,7 +21,7 @@ const (
 
 func appFixture() *httptest.Server {
 	router := http.NewServeMux()
-	page := bytes.Repeat([]byte("<p>bench!</p>    "), pageBytes/16)
+	page := bytes.Repeat([]byte("<p>bench!</p>   "), pageBytes/16)
 	router.HandleFunc("GET /page", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = w.Write(page)
