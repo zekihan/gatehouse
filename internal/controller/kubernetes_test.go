@@ -1,4 +1,4 @@
-//go:build integration
+//go:build integration || conformance
 
 package controller
 
@@ -122,8 +122,18 @@ func (c *testCluster) bootstrap() {
 		"cloudflare-edge-auth",
 		map[string][]byte{"current": []byte("disposable-edge")},
 	)
+	c.secret(defaultNamespace, bootstrapSecret, bootstrapValues())
+	cert, privateKey := testCertificate(c.t, testHost, false)
+	c.secret(testNamespace, "bazarr-tls", map[string][]byte{
+		corev1.TLSCertKey: cert, corev1.TLSPrivateKeyKey: []byte(privateKey),
+	})
+	c.endpoints("10.42.9.1", true)
+	c.createPolicy("old-policy", "web")
+}
+
+func bootstrapValues() map[string][]byte {
 	key := []byte(base64.StdEncoding.EncodeToString(make([]byte, 32)))
-	c.secret(defaultNamespace, bootstrapSecret, map[string][]byte{
+	return map[string][]byte{
 		"oidc-admin-client-secret": []byte(
 			"disposable-admin",
 		),
@@ -135,13 +145,7 @@ func (c *testCluster) bootstrap() {
 		"gossip-current":          key,
 		"gossip-previous":         key,
 		"crowdsec-lapi-key":       []byte("disposable-bouncer"),
-	})
-	cert, privateKey := testCertificate(c.t, testHost, false)
-	c.secret(testNamespace, "bazarr-tls", map[string][]byte{
-		corev1.TLSCertKey: cert, corev1.TLSPrivateKeyKey: []byte(privateKey),
-	})
-	c.endpoints("10.42.9.1", true)
-	c.createPolicy("old-policy", "web")
+	}
 }
 
 func testCertificate(t *testing.T, host string, ca bool) ([]byte, string) {

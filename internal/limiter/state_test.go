@@ -227,6 +227,37 @@ func TestIsolatedBounds(t *testing.T) {
 	)
 }
 
+func TestPartitionHealingMergesRetainedSlots(t *testing.T) {
+	slot := int64(start)
+	nodes := threeNodes(&slot)
+	a, b, isolated := nodes[0], nodes[1], nodes[2]
+	cfg := limits(12, 5, 10, 10)
+	expect(t, a, 5, 5, cfg)
+	synchronize(nodes)
+
+	clear(isolated.peers)
+	delete(a.peers, isolated.local)
+	delete(b.peers, isolated.local)
+	slot++
+	expect(t, a, 5, 5, cfg)
+	transfer(a, b, true)
+	expect(t, b, 1, 0, cfg)
+	expect(t, isolated, 5, 5, cfg)
+
+	for _, connected := range nodes[:2] {
+		see(connected, isolated)
+		see(isolated, connected)
+	}
+	synchronize(nodes)
+	synchronize(nodes) // A duplicate full exchange cannot add to retained counts.
+	slot++
+	for _, node := range nodes {
+		expect(t, node, 1, 0, cfg)
+	}
+	slot = start + window
+	expect(t, isolated, 3, 2, cfg)
+}
+
 func TestConnectedInFlightBound(t *testing.T) {
 	slot := int64(start)
 	nodes := threeNodes(&slot)

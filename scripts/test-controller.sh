@@ -45,5 +45,11 @@ done
 port=$(docker port "$container" 6443/tcp)
 (umask 077 && docker exec "$container" cat /etc/rancher/k3s/k3s.yaml \
     | sed "s|https://127.0.0.1:6443|https://$port|" > "$scratch/kubeconfig")
-GATEHOUSE_TEST_KUBECONFIG="$scratch/kubeconfig" "$go_cmd" test -tags=integration -run '^TestKubernetesController$' \
+tags=integration
+test='^TestKubernetesController$'
+if [[ ${1:-} == conformance ]]; then
+    tags=conformance
+    test='^TestGatewayAPIConformance$'
+fi
+GATEHOUSE_TEST_KUBECONFIG="$scratch/kubeconfig" "$go_cmd" test -tags="$tags" -run "$test" \
     -count=1 -timeout=4m -v ./internal/controller

@@ -3,7 +3,7 @@ CONTROLLER_GEN := $(GO) run sigs.k8s.io/controller-tools/cmd/controller-gen@v0.2
 VERSION := $(shell cat VERSION)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: build fmt lint test test/race test/integration test/controller generate audit container-test release-check
+.PHONY: build fmt lint test test/race test/integration test/controller test/conformance test/fuzz generate audit container-test release-check
 build:
 	mkdir -p dist
 	$(GO) build -trimpath -ldflags '$(LDFLAGS)' -o dist/gatehouse ./cmd/gatehouse
@@ -11,7 +11,7 @@ fmt:
 	gofmt -w cmd internal tests/integration
 lint:
 	@test -z "$$(gofmt -l cmd internal tests/integration)" || (gofmt -l cmd internal tests/integration; exit 1)
-	golangci-lint run --build-tags=integration
+	golangci-lint run --build-tags=integration,conformance
 test:
 	$(GO) test -count=1 ./...
 test/race:
@@ -20,10 +20,16 @@ test/integration: build test/controller
 	GATEHOUSE_BINARY=$(CURDIR)/dist/gatehouse $(GO) test -count=1 -tags=integration -v ./tests/integration
 test/controller:
 	GO=$(GO) bash scripts/test-controller.sh
+test/conformance:
+	GO=$(GO) bash scripts/test-controller.sh conformance
+test/fuzz:
+	@set -e; for target in FuzzClientHello FuzzProxyProtocol FuzzNormalizedPath FuzzQueryRedaction; do \
+		$(GO) test -run='^$$' -fuzz="^$$target$$" -fuzztime=5s -parallel=2 ./internal/dataplane; \
+	done
 generate:
 	$(CONTROLLER_GEN) crd paths=./internal/policy/... output:crd:dir=deploy/crds
 	$(CONTROLLER_GEN) rbac:roleName=gatehouse-controller paths=./internal/controller output:rbac:dir=deploy/rbac
-audit: lint test test/race test/integration
+audit: lint test test/race test/integration test/conformance test/fuzz
 	$(GO) mod verify
 container-test:
 	docker build --build-arg VERSION=$(VERSION) --tag gatehouse:smoke .

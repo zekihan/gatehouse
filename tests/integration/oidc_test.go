@@ -126,6 +126,7 @@ func TestGatehouseAuthelia(t *testing.T) {
 		request(t, browserB, http.MethodGet, echoURL, nil, nil),
 		http.StatusUnauthorized,
 	)
+	verifyGatusLogin(t, rawB)
 }
 
 func verifyMachineAndReturn(t *testing.T, client *http.Client, fixture *oidcFixture) {
@@ -153,6 +154,15 @@ func verifyMachineAndReturn(t *testing.T, client *http.Client, fixture *oidcFixt
 	if fixture.discover.Load() != 0 || fixture.jwks.Load() != 0 {
 		t.Fatal("unauthenticated machine requests or invalid returns contacted Authelia")
 	}
+}
+
+func verifyGatusLogin(t *testing.T, client *http.Client) {
+	t.Helper()
+	response := request(t, client, http.MethodGet, appURL+"/oauth2/sign_in", nil,
+		http.Header{"Accept": {"text/html"}})
+	requireRedirect(t, response, issuerHost)
+	expectStatus(t, request(t, client, http.MethodGet, echoURL, nil,
+		http.Header{"Cookie": {sessionName + "=invalid"}}), http.StatusUnauthorized)
 }
 
 func startLogin(t *testing.T, client *http.Client, target string) string {

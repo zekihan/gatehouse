@@ -71,6 +71,9 @@ streaming_checks() {
   hasnt "s3 identity" "$hdr" '^content-encoding:'
   hdr=$(c s3 /s3/obj -I)
   has "s3 head length" "$hdr" '^content-length: 15360'
+  hdr=$(c s3 /s3/obj/upload -X PUT --data-binary 'storage fixture' -D - -o /dev/null)
+  check "s3 put status" "$(printf '%s' "$hdr" | head -1 | awk '{print $2}')" "200"
+  has "s3 put body received" "$hdr" '^x-received: 15[[:space:]]*$'
   check "s3 big download" "$(c s3 '/big?mb=64' -o - | wc -c)" "67108864"
   hdr=$(c web01 /health -H 'Accept-Encoding: gzip' -D - -o "$T"/health)
   hasnt "small not compressed" "$hdr" '^content-encoding:'
@@ -84,6 +87,8 @@ routing_checks() {
 tls_checks() {
   alert=$(openssl s_client -connect "127.0.0.1:$PORT" -servername nohost.bench.test </dev/null 2>&1)
   has "unknown SNI alert" "$alert" 'unrecognized name|alert number 112'
+  alert=$(openssl s_client -connect "127.0.0.1:$PORT" -noservername </dev/null 2>&1)
+  has "missing SNI alert" "$alert" 'unrecognized name|alert number 112'
 }
 
 mtls_checks() {
@@ -160,12 +165,12 @@ group identity \
   "x-forwarded-host" "spoof headers stripped"
 group streaming \
   "s3 get status" "s3 get bytes" "s3 identity" \
-  "s3 head length" "s3 big download" "small not compressed" \
+  "s3 head length" "s3 put status" "s3 put body received" "s3 big download" "small not compressed" \
   "health body"
 group routing \
   "deny route"
 group tls \
-  "unknown SNI alert"
+  "unknown SNI alert" "missing SNI alert"
 group mtls \
   "mtls no cert refused" "mtls no cert no response" "mtls identity forwarded" \
   "mtls spoof stripped" "mtls other identity" "mtls blocked fp" \
@@ -185,4 +190,4 @@ group observability \
   "JSON access log" "metrics"
 
 printf '%d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skip"
-[ "$fail" = 0 ] && [ "$((pass + fail + skip))" = 53 ]
+[ "$fail" = 0 ] && [ "$((pass + fail + skip))" = 56 ]
