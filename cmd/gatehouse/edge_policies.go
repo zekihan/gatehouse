@@ -22,6 +22,7 @@ import (
 	"github.com/zekihan/gatehouse/internal/crowdsec"
 	"github.com/zekihan/gatehouse/internal/dataplane"
 	"github.com/zekihan/gatehouse/internal/limiter"
+	"github.com/zekihan/gatehouse/internal/observability"
 )
 
 type policyFlags struct {
@@ -147,12 +148,10 @@ func (p edgePolicies) options(options dataplane.Options) dataplane.Options {
 	options.PolicyReady = func(required bool) bool {
 		return p.limits.Ready() && (!required || (p.bouncer != nil && p.bouncer.Ready()))
 	}
-	options.PolicyMetrics = func(out io.Writer) {
-		if p.bouncer != nil {
-			p.bouncer.Metrics(out)
-		}
-		p.limits.Metrics(out)
+	if p.bouncer != nil {
+		options.CrowdSecMetrics = p.bouncer.Metrics
 	}
+	options.LimiterMetrics = p.limits.Metrics
 	return options
 }
 
@@ -173,7 +172,7 @@ func (p edgePolicies) admit(
 	_ *http.Request,
 	info dataplane.RequestInfo,
 ) (func(), bool) {
-	key := info.Route.Namespace + "/" + info.Route.Name
+	key := observability.RouteID(info.Route.Namespace, info.Route.Name)
 	release, allowed := p.limits.Admit(key, info.ClientIP, info.Host, info.Limits)
 	if !allowed {
 		http.Error(w, "Too Many Requests", http.StatusTooManyRequests)

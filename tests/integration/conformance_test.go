@@ -7,7 +7,9 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +17,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/zekihan/gatehouse/internal/observability"
 )
 
 func TestGatehouseConformance(t *testing.T) {
@@ -63,13 +67,14 @@ func runBench(t *testing.T, binary string) {
 	t.Cleanup(lapi.Close)
 	logFile := filepath.Join(dir, "access.log")
 	ready := filepath.Join(dir, "ready")
+	metricsPort := loopbackPort(t)
 	env := append(os.Environ(),
 		"GATEHOUSE_BINARY="+binary,
 		"BENCH_DIR="+dir,
 		"BENCH_READY="+ready,
 		"BENCH_LOG="+logFile,
 		"BENCH_TLS_PORT="+loopbackPort(t),
-		"BENCH_METRICS_PORT="+loopbackPort(t),
+		"BENCH_METRICS_PORT="+metricsPort,
 		"BENCH_APP_URL="+app.URL,
 		"BENCH_AUTH_URL="+auth.URL,
 		"BENCH_LAPI_URL="+lapi.URL,
@@ -92,6 +97,11 @@ func runBench(t *testing.T, binary string) {
 		features = enabledFeatures(t)
 	}
 	startDriver(ctx, t, driver, dir, logFile, ready, env)
+	if driver == filepath.Join(fixtures, "driver.py") {
+		management := "http://127.0.0.1:" + metricsPort
+		checkFileState(t, management)
+		checkPolicyMetrics(t, management)
+	}
 	check := exec.CommandContext(ctx, "bash", filepath.Join(fixtures, "conformance.sh"))
 	check.Env = append(env, "BENCH_FEATURES="+features)
 	output, err := check.CombinedOutput()
@@ -99,6 +109,57 @@ func runBench(t *testing.T, binary string) {
 		t.Fatalf("wire checks: %v\n%s", err, output)
 	}
 	t.Logf("\n%s", output)
+}
+
+func checkFileState(t *testing.T, management string) {
+	t.Helper()
+	resp := managementResponse(t, management+"/state")
+	defer resp.Body.Close()
+	var state observability.State
+	if err := json.NewDecoder(resp.Body).Decode(&state); err != nil {
+		t.Fatal(err)
+	}
+	if !state.Ready || state.SnapshotDigest == "" || len(state.Listeners) == 0 ||
+		state.Controller != nil {
+		t.Fatalf("unexpected standalone state: %+v", state)
+	}
+}
+
+func checkPolicyMetrics(t *testing.T, management string) {
+	t.Helper()
+	resp := managementResponse(t, management+"/metrics")
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sample := range []string{
+		"gatehouse_crowdsec_decisions 40000\n",
+		"gatehouse_limiter_isolated 1\n",
+		"gatehouse_limiter_resync_pending 0\n",
+		`gatehouse_limiter_pressure{route="bench/web`,
+	} {
+		if !strings.Contains(string(body), sample) {
+			t.Errorf("running process metrics missing %q", sample)
+		}
+	}
+}
+
+func managementResponse(t *testing.T, endpoint string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, endpoint, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := (&http.Client{Timeout: time.Second}).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
+		t.Fatalf("GET %s returned %d", endpoint, resp.StatusCode)
+	}
+	return resp
 }
 
 func enabledFeatures(t *testing.T) string {

@@ -14,6 +14,7 @@ import (
 
 	"github.com/zekihan/gatehouse/internal/config"
 	"github.com/zekihan/gatehouse/internal/dataplane"
+	"github.com/zekihan/gatehouse/internal/observability"
 	"github.com/zekihan/gatehouse/internal/snapshot"
 )
 
@@ -23,7 +24,7 @@ func serveFile(args []string, stdout, stderr io.Writer) error {
 	operator := flags.String("config", "", "operator configuration file")
 	input := flags.String("snapshot", "", "resolved JSON snapshot file")
 	bind := flags.String("bind", "127.0.0.1", "address to bind to")
-	metrics := flags.String("metrics", "", "metrics and readiness listen address")
+	metrics := flags.String("metrics", "", "readiness, state and metrics listen address")
 	var policy policyFlags
 	policy.register(flags)
 	if err := flags.Parse(args); err != nil {
@@ -86,6 +87,7 @@ func serveWithMetrics(
 		}
 		w.WriteHeader(http.StatusOK)
 	})
+	mux.HandleFunc("GET /state", observability.StateHandler(proxy.State))
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()

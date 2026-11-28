@@ -8,10 +8,12 @@ import (
 	"net/http"
 	"net/netip"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/zekihan/gatehouse/internal/config"
+	"github.com/zekihan/gatehouse/internal/observability"
 	"github.com/zekihan/gatehouse/internal/snapshot"
 )
 
@@ -26,7 +28,12 @@ func (p *Plane) serveRequest(
 	start := time.Now()
 	w := &responseWriter{ResponseWriter: out}
 	record := requestRecord{listener: number, requestBytes: new(atomicCounter)}
-	defer func() { p.observe(w, req, record, start) }()
+	var entry accessEntry
+	if p.opts.AccessLog != nil {
+		entry = incomingRequest(req)
+	}
+	method := req.Method
+	defer func() { p.observe(w, record, entry, method, start) }()
 	state := p.state.Load()
 	if state == nil {
 		http.Error(w, "Service Unavailable", http.StatusServiceUnavailable)
@@ -133,7 +140,8 @@ func (p *Plane) applyPolicies(
 	record *requestRecord,
 	hostName, path string,
 ) {
-	record.route, record.logOff = route.rule.Name, route.rule.AccessLogOff
+	record.route = observability.RouteID(route.rule.Namespace, route.rule.Name)
+	record.logOff = route.rule.AccessLogOff
 	if denied(route.rule.Deny, path) {
 		reject(w, record, "route_path", http.StatusForbidden)
 		return
@@ -166,17 +174,18 @@ func (p *Plane) applyPolicies(
 		Route:           &route.rule,
 		CrowdSecEnabled: state.defaults.CrowdSec,
 		Limits:          state.routeLimits(&route.rule),
+		record:          record,
 	}
 	crowdSecExempt := route.rule.CrowdSecExempt &&
 		slices.Contains(registry.CrowdSecExemptPaths, path)
 	if p.opts.CrowdSec != nil && !crowdSecExempt && !p.opts.CrowdSec(w, req, info) {
-		record.deny = "crowdsec"
+		record.policyDeny("crowdsec")
 		return
 	}
 	if p.opts.Limits != nil {
 		release, allowed := p.opts.Limits(w, req, info)
 		if !allowed {
-			record.deny = "limits"
+			record.policyDeny("limits")
 			return
 		}
 		if release != nil {
@@ -185,7 +194,7 @@ func (p *Plane) applyPolicies(
 	}
 	auth, allows := state.authorize(p, w, req, registry, info)
 	if !allows {
-		record.deny = "auth"
+		record.policyDeny("auth")
 		return
 	}
 
@@ -250,7 +259,7 @@ func (p *Plane) proxyRequest(
 		reject(w, record, "invalid_backend", http.StatusInternalServerError)
 		return
 	}
-	record.backend = target.name
+	record.backend = target.name + ":" + strconv.Itoa(int(target.port))
 	// Keep the inbound request immutable for logging and authorization.
 	r := req.Clone(req.Context())
 	applyRewrite(r, route, path, auth.delegation)

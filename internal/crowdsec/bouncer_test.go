@@ -72,11 +72,8 @@ func TestFullSnapshotsAcrossReplicas(t *testing.T) {
 	first.now = func() time.Time { return before.Add(30 * time.Second) }
 	expectBan(t, first, false, "192.0.2.1")
 	expectBan(t, first, true, "2001:db8::e", "198.51.100.2")
-	var metric strings.Builder
-	first.Metrics(&metric)
-	if !strings.Contains(metric.String(), "gatehouse_crowdsec_decisions 2\n") ||
-		!strings.Contains(metric.String(), "gatehouse_crowdsec_staleness_seconds 30\n") {
-		t.Fatalf("unexpected stale metrics %s", metric.String())
+	if metric := first.Metrics(); metric.Decisions != 2 || metric.Staleness != 30*time.Second {
+		t.Fatalf("unexpected stale metrics: %+v", metric)
 	}
 
 	mu.Lock()

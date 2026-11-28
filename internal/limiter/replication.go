@@ -4,10 +4,11 @@ import (
 	"bytes"
 	"compress/flate"
 	"encoding/json"
-	"fmt"
 	"io"
 	"maps"
 	"time"
+
+	"github.com/zekihan/gatehouse/internal/observability"
 )
 
 const (
@@ -247,42 +248,34 @@ func (l *Limiter) observe(id origin, now time.Time) bool {
 	return true
 }
 
-func (l *Limiter) Metrics(out io.Writer) {
+func (l *Limiter) Metrics() observability.LimiterMetrics {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
 	l.sweep(now.Unix())
-	peers := 0
+	metrics := observability.LimiterMetrics{
+		PeerStaleness:    make(map[string]time.Duration, len(l.peers)),
+		CapacityOverflow: l.overflowEvents,
+		ResyncPending:    l.resync,
+		RoutePressure:    make(map[string]float64, len(l.pressures)),
+	}
 	for id, last := range l.peers {
 		if id.Epoch != l.latest[id.Name].epoch {
 			continue
 		}
-		if now.Sub(last) <= peerFresh {
-			peers++
+		stale := max(0, now.Sub(last))
+		metrics.PeerStaleness[id.Name] = stale
+		if stale <= peerFresh {
+			metrics.GossipPeers++
 		}
-		fmt.Fprintf(
-			out,
-			"gatehouse_gossip_peer_staleness_seconds{peer=%q} %g\n",
-			id.Name,
-			max(0, now.Sub(last).Seconds()),
-		)
 	}
-	fmt.Fprintf(out, "gatehouse_gossip_peers %d\n", peers)
-	fmt.Fprintf(out, "gatehouse_limiter_isolated %d\n", flag(l.resync || peers == 0))
-	fmt.Fprintf(out, "gatehouse_limiter_resync_pending %d\n", flag(l.resync))
-	fmt.Fprintf(out, "gatehouse_limiter_capacity_overflow_total %d\n", l.overflowEvents)
+	metrics.Isolated = l.resync || metrics.GossipPeers == 0
 	for route, values := range l.pressures {
 		high := 0.0
 		for _, value := range values {
 			high = max(high, value)
 		}
-		fmt.Fprintf(out, "gatehouse_limiter_pressure{route=%q} %g\n", route, high)
+		metrics.RoutePressure[route] = high
 	}
-}
-
-func flag(value bool) int {
-	if value {
-		return 1
-	}
-	return 0
+	return metrics
 }
