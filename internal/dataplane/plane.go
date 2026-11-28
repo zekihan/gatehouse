@@ -33,22 +33,26 @@ const (
 var groups = []tls.CurveID{tls.X25519MLKEM768, tls.X25519, tls.CurveP384, tls.CurveP521}
 
 type RequestInfo struct {
-	Listener   uint16
-	Host       string
-	Protection string
-	Path       string
-	ClientIP   netip.Addr
-	Route      *snapshot.Route
+	Listener        uint16
+	Host            string
+	Protection      string
+	Path            string
+	ClientIP        netip.Addr
+	Route           *snapshot.Route
+	CrowdSecEnabled bool
+	Limits          config.Limits
 }
 
 // Options connects independently managed request policies to the data plane.
 // Policies return false after writing a refusal. A nil OIDC hook fails closed.
 type Options struct {
-	OnListening func()
-	AccessLog   io.Writer
-	CrowdSec    func(http.ResponseWriter, *http.Request, RequestInfo) bool
-	Limits      func(http.ResponseWriter, *http.Request, RequestInfo) (release func(), allowed bool)
-	OIDC        func(http.ResponseWriter, *http.Request, RequestInfo) bool
+	OnListening   func()
+	AccessLog     io.Writer
+	CrowdSec      func(http.ResponseWriter, *http.Request, RequestInfo) bool
+	Limits        func(http.ResponseWriter, *http.Request, RequestInfo) (release func(), allowed bool)
+	OIDC          func(http.ResponseWriter, *http.Request, RequestInfo) bool
+	PolicyReady   func(crowdSecEnabled bool) bool
+	PolicyMetrics func(io.Writer)
 }
 
 type Plane struct {
@@ -66,6 +70,7 @@ type compiled struct {
 	edgeHeaders map[string]bool
 	forwardAuth map[string]config.ForwardAuthClass
 	compression config.Compression
+	defaults    config.Defaults
 	transports  []*http.Transport
 }
 
@@ -96,6 +101,12 @@ func New(opts Options) *Plane {
 	return &Plane{opts: opts}
 }
 
+func (p *Plane) Ready() bool {
+	state := p.state.Load()
+	return state != nil && (p.opts.PolicyReady == nil ||
+		p.opts.PolicyReady(state.defaults.CrowdSec))
+}
+
 // Update compiles and activates a snapshot. Invalid app objects are denied at
 // their existing match, so they cannot expose a broader route.
 func (p *Plane) Update(input *snapshot.Snapshot) error {
@@ -112,6 +123,7 @@ func (p *Plane) Update(input *snapshot.Snapshot) error {
 		digest: input.Digest, ports: make(map[uint16]*edgePort), registry: input.Config.Hosts,
 		edgeHeaders: make(map[string]bool), forwardAuth: input.Config.ForwardAuthClasses,
 		compression: input.Config.Defaults.Compression,
+		defaults:    input.Config.Defaults,
 	}
 	for number, options := range input.Config.Ports {
 		port, err := newPort(options, input.DataPlane.EdgeSecrets)
