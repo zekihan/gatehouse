@@ -67,6 +67,8 @@ type oidcFixture struct {
 	discover    atomic.Int32
 	tokenStatus atomic.Int64
 	tokenError  atomic.Pointer[string]
+	tokenCause  atomic.Pointer[string]
+	basicMatch  atomic.Bool
 }
 
 func newOIDCFixture(t *testing.T) *oidcFixture {
@@ -130,13 +132,15 @@ func newOIDCFixture(t *testing.T) *oidcFixture {
 	t.Cleanup(issuer.Close)
 	t.Cleanup(func() {
 		if t.Failed() {
-			code := f.tokenError.Load()
-			if code == nil {
-				unknown := ""
-				code = &unknown
-			}
-			t.Logf("Authelia exchange HTTP status=%d error=%q discovery=%d JWKS=%d",
-				f.tokenStatus.Load(), *code, f.discover.Load(), f.jwks.Load())
+			t.Logf(
+				"Authelia exchange HTTP status=%d error=%q cause=%q basic-match=%t discovery=%d JWKS=%d",
+				f.tokenStatus.Load(),
+				diagnosticValue(&f.tokenError),
+				diagnosticValue(&f.tokenCause),
+				f.basicMatch.Load(),
+				f.discover.Load(),
+				f.jwks.Load(),
+			)
 		}
 	})
 	f.issuer = issuer.Listener.Addr().String()
@@ -144,10 +148,19 @@ func newOIDCFixture(t *testing.T) *oidcFixture {
 	return f
 }
 
+func diagnosticValue(value *atomic.Pointer[string]) string {
+	if stored := value.Load(); stored != nil {
+		return *stored
+	}
+	return "(none)"
+}
+
 func (f *oidcFixture) recordTokenResponse(resp *http.Response) error {
 	if resp.Request.URL.Path != "/api/oidc/token" {
 		return nil
 	}
+	id, secret, present := resp.Request.BasicAuth()
+	f.basicMatch.Store(present && id == testClient && secret == f.secret)
 	f.tokenStatus.Store(int64(resp.StatusCode))
 	if resp.StatusCode == http.StatusOK {
 		return nil
@@ -161,13 +174,36 @@ func (f *oidcFixture) recordTokenResponse(resp *http.Response) error {
 	}
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 	var failure struct {
-		Code string `json:"error"`
+		Code        string `json:"error"`
+		Debug       string `json:"error_debug"`
+		Description string `json:"error_description"`
 	}
 	if err := json.Unmarshal(body, &failure); err == nil {
 		code := safeOAuthError(failure.Code)
 		f.tokenError.Store(&code)
+		cause := safeClientAuthCause(failure.Debug + " " + failure.Description)
+		f.tokenCause.Store(&cause)
 	}
 	return nil
+}
+
+func safeClientAuthCause(message string) string {
+	for detail, category := range map[string]string{
+		"did not match the registered client secret": "registered digest mismatch",
+		"no 'client_secret'":                         "missing registered secret",
+		"configured to only support":                 "authentication method mismatch",
+		"did not appear to be a registered client":   "client not registered",
+		"does not appear to be a registered client":  "client not registered",
+		"The Client ID was missing":                  "missing client credentials",
+		"no known authentication method":             "missing authentication method",
+		"authorization header":                       "malformed authorization header",
+		"more than one known authentication method":  "multiple authentication methods",
+	} {
+		if strings.Contains(message, detail) {
+			return category
+		}
+	}
+	return "(unclassified)"
 }
 
 func safeOAuthError(code string) string {
@@ -474,6 +510,7 @@ notifier:
 identity_providers:
   oidc:
     hmac_secret: %s
+    enable_client_debug_messages: true
     enforce_pkce: always
     claims_policies:
       gateway:
