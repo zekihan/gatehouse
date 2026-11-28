@@ -34,12 +34,14 @@ const (
 var groups = []tls.CurveID{tls.X25519MLKEM768, tls.X25519, tls.CurveP384, tls.CurveP521}
 
 type RequestInfo struct {
-	Listener   uint16
-	Host       string
-	Protection string
-	Path       string
-	ClientIP   netip.Addr
-	Route      *snapshot.Route
+	Listener        uint16
+	Host            string
+	Protection      string
+	Path            string
+	ClientIP        netip.Addr
+	Route           *snapshot.Route
+	CrowdSecEnabled bool
+	Limits          config.Limits
 }
 
 // Options connects independently managed request policies to the data plane.
@@ -50,6 +52,8 @@ type Options struct {
 	CrowdSec      func(http.ResponseWriter, *http.Request, RequestInfo) bool
 	Limits        func(http.ResponseWriter, *http.Request, RequestInfo) (release func(), allowed bool)
 	OIDCTransport http.RoundTripper
+	PolicyReady   func(crowdSecEnabled bool) bool
+	PolicyMetrics func(io.Writer)
 }
 
 type Plane struct {
@@ -68,6 +72,7 @@ type compiled struct {
 	forwardAuth map[string]config.ForwardAuthClass
 	oidc        map[string]*oidclogin.Class
 	compression config.Compression
+	defaults    config.Defaults
 	transports  []*http.Transport
 }
 
@@ -98,6 +103,12 @@ func New(opts Options) *Plane {
 	return &Plane{opts: opts}
 }
 
+func (p *Plane) Ready() bool {
+	state := p.state.Load()
+	return state != nil && (p.opts.PolicyReady == nil ||
+		p.opts.PolicyReady(state.defaults.CrowdSec))
+}
+
 // Update compiles and activates a snapshot. Invalid app objects are denied at
 // their existing match, so they cannot expose a broader route.
 func (p *Plane) Update(input *snapshot.Snapshot) error {
@@ -114,6 +125,7 @@ func (p *Plane) Update(input *snapshot.Snapshot) error {
 		digest: input.Digest, ports: make(map[uint16]*edgePort), registry: input.Config.Hosts,
 		edgeHeaders: make(map[string]bool), forwardAuth: input.Config.ForwardAuthClasses,
 		compression: input.Config.Defaults.Compression,
+		defaults:    input.Config.Defaults,
 		oidc:        make(map[string]*oidclogin.Class, len(input.Config.AuthClasses)),
 	}
 	for name, class := range input.Config.AuthClasses {

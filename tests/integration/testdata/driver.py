@@ -5,7 +5,7 @@ import base64
 import json
 import os
 import signal
-import socket
+import urllib.request
 import subprocess
 import sys
 import time
@@ -36,7 +36,7 @@ def snapshot(legacy, root):
         },
         "forwardAuthClasses": {},
         "deviceTrust": {"caConfigMap": "bench-device-ca", "exceptions": []},
-        "defaults": {"limits": limits, "compression": compression, "crowdsec": False},
+        "defaults": {"limits": limits, "compression": compression, "crowdsec": True},
     }
     for key, value in legacy["forwardAuth"].items():
         operator["forwardAuthClasses"][key] = {
@@ -82,6 +82,12 @@ def snapshot(legacy, root):
                 "endpoints": [target.netloc],
             },
         }
+        if route["name"] == "rl-root":
+            # A low minute cap makes the wire assertion independent of slot boundaries.
+            rule["limits"] = {
+                "perRouteClient": {"perMinute": 10, "perSecondSlot": 5, "inFlight": 1000},
+                "perRouteHost": {"inFlight": 2000},
+            }
         if route["method"]:
             rule["method"] = route["method"]
         if route["mtlsPolicy"]:
@@ -118,9 +124,15 @@ def main():
     cfg, snap = Path("bench-operator.json"), Path("bench-snapshot.json")
     cfg.write_text(json.dumps(operator))
     snap.write_text(json.dumps(data))
+    key_file = Path("bench-lapi-key")
+    key_file.write_text(bench["crowdsec"]["apiKey"])
+    ready_host = next(host["name"] for host in bench["tls"]["hosts"] if host["name"].startswith("web01."))
     command = [
         os.environ["GATEHOUSE_BINARY"], "serve", "--config", str(cfg),
         "--snapshot", str(snap), "--bind", ip, "--metrics", bench["metricsListen"],
+        "--crowdsec-lapi", bench["crowdsec"]["lapiUrl"], "--crowdsec-key-file", str(key_file),
+        "--ready-route", f"https://{ready_host}:{port}/health",
+        "--ready-route-ca-file", str(root / "certs" / "server-root.crt"),
     ]
     ready = os.environ.get("BENCH_READY")
     if not ready:
@@ -133,7 +145,7 @@ def main():
         signal.signal(signal.SIGINT, stop)
         while server.poll() is None:
             try:
-                with socket.create_connection((ip, port), timeout=0.2):
+                with urllib.request.urlopen(f"http://{bench['metricsListen']}/readyz", timeout=0.2):
                     pass
             except OSError:
                 time.sleep(0.05)

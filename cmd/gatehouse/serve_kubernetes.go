@@ -47,6 +47,8 @@ func serveKubernetes(args []string, stdout, stderr io.Writer) error {
 	)
 	flags.StringVar(&options.ConfigMap, "config-map", "", "operator ConfigMap name")
 	flags.StringVar(&options.Gateway, "gateway", "", "Gateway name")
+	var policy policyFlags
+	policy.register(flags)
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -55,13 +57,24 @@ func serveKubernetes(args []string, stdout, stderr io.Writer) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return runKubernetes(ctx, stdout, options, *kubeconfig, *bind, *management)
+	probe, err := policy.probe(*bind)
+	if err != nil {
+		return err
+	}
+	policies, closePolicies, err := policy.start(ctx, stderr)
+	if err != nil {
+		return err
+	}
+	defer closePolicies()
+	return runKubernetes(ctx, stdout, options, policies, probe, *kubeconfig, *bind, *management)
 }
 
 func runKubernetes(
 	ctx context.Context,
 	stdout io.Writer,
 	options controller.Options,
+	policies edgePolicies,
+	probe *routeProbe,
 	kubeconfig, bind, management string,
 ) error {
 	cfg, err := kubernetesConfig(kubeconfig)
@@ -72,20 +85,20 @@ func runKubernetes(
 	defer cancel()
 	failures := make(chan error, 3)
 	runtime := &edgeRuntime{listening: make(chan struct{}, 1)}
-	runtime.plane = dataplane.New(dataplane.Options{
+	runtime.plane = dataplane.New(policies.options(dataplane.Options{
 		AccessLog: stdout,
 		OnListening: func() {
 			runtime.serving.Store(true)
 			runtime.listening <- struct{}{}
 		},
-	})
-	options.Serving = runtime.serving.Load
+	}))
+	options.Serving = func() bool { return runtime.serving.Load() && runtime.plane.Ready() }
 	options.Install = func(snap *snapshot.Snapshot) error { return runtime.install(ctx, snap, bind, failures) }
 	rec, err := controller.New(cfg, options)
 	if err != nil {
 		return err
 	}
-	server, listener, err := managementServer(ctx, management, rec, runtime.plane)
+	server, listener, err := managementServer(ctx, management, rec, runtime.plane, probe)
 	if err != nil {
 		return err
 	}
@@ -116,6 +129,7 @@ func managementServer(
 	address string,
 	rec *controller.Controller,
 	proxy *dataplane.Plane,
+	probe *routeProbe,
 ) (*http.Server, net.Listener, error) {
 	var cfg net.ListenConfig
 	listener, err := cfg.Listen(ctx, "tcp", address)
@@ -123,7 +137,13 @@ func managementServer(
 		return nil, nil, err
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /readyz", rec.ReadyHTTP)
+	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
+		if !rec.Ready() || !probe.check(r.Context()) {
+			http.Error(w, "Not Ready", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
 	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
 		proxy.Metrics().ServeHTTP(w, r)
 		rec.Metrics(w, r)

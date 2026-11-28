@@ -3,8 +3,10 @@
 Run `make test/integration`. The harness builds the real Gatehouse binary,
 generates disposable certificates and routes, and starts loopback app,
 Authelia and LAPI mocks. The default driver converts the fixtures to an
-operator configuration and a file snapshot. It runs 50 wire checks. The
-CrowdSec and shared limit wire checks require their policy implementations.
+operator configuration and a file snapshot. It waits for a real HTTPS route
+to be ready through the CrowdSec check, then runs all 53 wire checks.
+The limiter fault tests separately exercise three encrypted memberlist nodes
+and deterministic loss, reordering, restart and partition schedules.
 
 ## Using a different driver
 
