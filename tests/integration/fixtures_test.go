@@ -49,6 +49,15 @@ func appFixture() *httptest.Server {
 			_, _ = w.Write(make([]byte, objectBytes))
 		}
 	})
+	router.HandleFunc("PUT /s3/obj/upload", func(w http.ResponseWriter, r *http.Request) {
+		read, err := io.Copy(io.Discard, r.Body)
+		if err != nil {
+			http.Error(w, "incomplete upload", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("X-Received", strconv.FormatInt(read, 10))
+		w.WriteHeader(http.StatusOK)
+	})
 	router.HandleFunc("GET /big", serveDownload)
 	router.HandleFunc("POST /api/v1/write", func(w http.ResponseWriter, r *http.Request) {
 		if _, err := io.Copy(io.Discard, r.Body); err != nil {

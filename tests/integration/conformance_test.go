@@ -257,6 +257,9 @@ func startDriver(
 	}
 	t.Cleanup(func() { _ = diagnostics.Close() })
 	cmd := exec.CommandContext(ctx, driver)
+	// The driver forwards the interrupt to its Gatehouse child and reaps it.
+	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
+	cmd.WaitDelay = 5 * time.Second
 	cmd.Env, cmd.Dir = env, dir
 	cmd.Stdout, cmd.Stderr = out, diagnostics
 	if err := cmd.Start(); err != nil {
@@ -268,10 +271,7 @@ func startDriver(
 		waitErr = cmd.Wait()
 		close(done)
 	}()
-	t.Cleanup(func() {
-		_ = cmd.Process.Signal(os.Interrupt)
-		<-done
-	})
+	t.Cleanup(func() { <-done })
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	for {
