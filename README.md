@@ -26,7 +26,9 @@ dist/gatehouse serve --config operator.yaml --snapshot snapshot.json \
 ```
 
 The snapshot JSON uses the [resolved snapshot fields](internal/snapshot/dataplane.go).
-The optional metrics listener serves `GET /metrics`. The conformance tests
+The optional management listener serves `GET /metrics` and `GET /state`. See the
+[state and metrics schema](docs/state.md) and [access log schema](docs/access-log.md).
+The conformance tests
 generate both input files and their disposable certificates.
 
 ### CrowdSec and shared limits

@@ -146,7 +146,7 @@ observability_checks() {
     sleep 0.1
   done
   has "JSON access log" "$access" '^\{'
-  has "metrics" "$(curl -sS --max-time 30 "http://127.0.0.1:$MPORT/metrics")" '^gatehouse_requests_total\{.*route="web01'
+  has "metrics" "$(curl -sS --max-time 30 "http://127.0.0.1:$MPORT/metrics")" '^gatehouse_requests_total\{.*route="(bench/)?web01'
 }
 
 group proxy \

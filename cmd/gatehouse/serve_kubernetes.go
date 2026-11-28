@@ -19,6 +19,7 @@ import (
 
 	"github.com/zekihan/gatehouse/internal/controller"
 	"github.com/zekihan/gatehouse/internal/dataplane"
+	"github.com/zekihan/gatehouse/internal/observability"
 	"github.com/zekihan/gatehouse/internal/snapshot"
 )
 
@@ -26,7 +27,7 @@ func serveKubernetes(args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("serve-kubernetes", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	bind := flags.String("bind", "", "edge listen IP")
-	management := flags.String("management", ":8080", "readiness and metrics listen address")
+	management := flags.String("management", ":8080", "readiness, state and metrics listen address")
 	kubeconfig := flags.String(
 		"kubeconfig",
 		"",
@@ -144,10 +145,17 @@ func managementServer(
 		}
 		w.WriteHeader(http.StatusOK)
 	})
-	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
-		proxy.Metrics().ServeHTTP(w, r)
-		rec.Metrics(w, r)
-	})
+	mux.HandleFunc(
+		"GET /metrics",
+		observability.MetricsHandler(proxy.WriteMetrics, rec.WriteMetrics),
+	)
+	mux.HandleFunc("GET /state", observability.StateHandler(func() observability.State {
+		state := proxy.State()
+		controllerState := rec.ObservabilityState()
+		state.Controller = &controllerState
+		state.Ready = rec.Ready()
+		return state
+	}))
 	return &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}, listener, nil
 }
 

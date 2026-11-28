@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/zekihan/gatehouse/internal/observability"
 )
 
 const maxResponse = 64 << 20
@@ -98,23 +100,18 @@ func (b *Bouncer) Banned(ip netip.Addr) bool {
 
 func (b *Bouncer) Ready() bool { return b.active.Load() != nil }
 
-func (b *Bouncer) Metrics(out io.Writer) {
+func (b *Bouncer) Metrics() observability.CrowdSecMetrics {
 	now := b.now()
-	count, stale := 0, max(0, now.Sub(b.started).Seconds())
+	metrics := observability.CrowdSecMetrics{Staleness: max(0, now.Sub(b.started))}
 	if current := b.active.Load(); current != nil {
 		for _, expires := range current.expiry {
 			if expires.After(now) {
-				count++
+				metrics.Decisions++
 			}
 		}
-		stale = max(0, now.Sub(current.updated).Seconds())
+		metrics.Staleness = max(0, now.Sub(current.updated))
 	}
-	fmt.Fprintf(
-		out,
-		"gatehouse_crowdsec_decisions %d\ngatehouse_crowdsec_staleness_seconds %g\n",
-		count,
-		stale,
-	)
+	return metrics
 }
 
 func (b *Bouncer) poll(ctx context.Context) error {

@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/zekihan/gatehouse/internal/config"
+	"github.com/zekihan/gatehouse/internal/observability"
 	"github.com/zekihan/gatehouse/internal/oidclogin"
 	"github.com/zekihan/gatehouse/internal/snapshot"
 )
@@ -42,18 +43,36 @@ type RequestInfo struct {
 	Route           *snapshot.Route
 	CrowdSecEnabled bool
 	Limits          config.Limits
+	record          *requestRecord
+}
+
+// SetClientIdentity records a validated identity supplied by a request policy.
+// Call only during the policy hook.
+func (i RequestInfo) SetClientIdentity(identity string) {
+	if i.record != nil {
+		i.record.identity = identity
+	}
+}
+
+// SetDenyReason records a fixed policy reason for a refusal. Call only during
+// the policy hook, with a bounded label independent of the incoming request.
+func (i RequestInfo) SetDenyReason(reason string) {
+	if i.record != nil {
+		i.record.deny = reason
+	}
 }
 
 // Options connects independently managed request policies to the data plane.
 // Policies return false after writing a refusal.
 type Options struct {
-	OnListening   func()
-	AccessLog     io.Writer
-	CrowdSec      func(http.ResponseWriter, *http.Request, RequestInfo) bool
-	Limits        func(http.ResponseWriter, *http.Request, RequestInfo) (release func(), allowed bool)
-	OIDCTransport http.RoundTripper
-	PolicyReady   func(crowdSecEnabled bool) bool
-	PolicyMetrics func(io.Writer)
+	OnListening     func()
+	AccessLog       io.Writer
+	CrowdSecMetrics func() observability.CrowdSecMetrics
+	LimiterMetrics  func() observability.LimiterMetrics
+	CrowdSec        func(http.ResponseWriter, *http.Request, RequestInfo) bool
+	Limits          func(http.ResponseWriter, *http.Request, RequestInfo) (release func(), allowed bool)
+	OIDCTransport   http.RoundTripper
+	PolicyReady     func(crowdSecEnabled bool) bool
 }
 
 type Plane struct {
@@ -62,18 +81,20 @@ type Plane struct {
 	updateMu sync.Mutex
 	metrics  metrics
 	logMu    sync.Mutex
+	serving  atomic.Bool
 }
 
 type compiled struct {
-	digest      string
-	ports       map[uint16]*edgePort
-	registry    map[string]config.Host
-	edgeHeaders map[string]bool
-	forwardAuth map[string]config.ForwardAuthClass
-	oidc        map[string]*oidclogin.Class
-	compression config.Compression
-	defaults    config.Defaults
-	transports  []*http.Transport
+	digest              string
+	ports               map[uint16]*edgePort
+	registry            map[string]config.Host
+	edgeHeaders         map[string]bool
+	forwardAuth         map[string]config.ForwardAuthClass
+	oidc                map[string]*oidclogin.Class
+	compression         config.Compression
+	deviceTLSExceptions int
+	defaults            config.Defaults
+	transports          []*http.Transport
 }
 
 type edgePort struct {
@@ -126,9 +147,10 @@ func (p *Plane) Update(input *snapshot.Snapshot) error {
 	next := &compiled{
 		digest: input.Digest, ports: make(map[uint16]*edgePort), registry: input.Config.Hosts,
 		edgeHeaders: make(map[string]bool), forwardAuth: input.Config.ForwardAuthClasses,
-		compression: input.Config.Defaults.Compression,
-		defaults:    input.Config.Defaults,
-		oidc:        make(map[string]*oidclogin.Class, len(input.Config.AuthClasses)),
+		compression:         input.Config.Defaults.Compression,
+		deviceTLSExceptions: len(input.Config.DeviceTrust.Exceptions),
+		defaults:            input.Config.Defaults,
+		oidc:                make(map[string]*oidclogin.Class, len(input.Config.AuthClasses)),
 	}
 	for name, class := range input.Config.AuthClasses {
 		var previous *oidclogin.Class
@@ -315,6 +337,8 @@ func (p *Plane) Serve(ctx context.Context, bindIP string) error {
 		listeners[number] = listener
 	}
 
+	p.serving.Store(true)
+	defer p.serving.Store(false)
 	if p.opts.OnListening != nil {
 		p.opts.OnListening()
 	}
@@ -341,6 +365,9 @@ func (p *Plane) serve(
 	l := wrapListener(ctx, listener, p, number, mode)
 	server := &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if conn, ok := r.Context().Value(requestConnKey{}).(*requestConn); ok {
+				conn.handled = true
+			}
 			p.serveRequest(number, mode, w, r)
 		}),
 		DisableGeneralOptionsHandler: true,
@@ -348,6 +375,7 @@ func (p *Plane) serve(
 		IdleTimeout:                  defaultDeadline,
 		ErrorLog:                     log.New(io.Discard, "", 0),
 		ConnContext:                  connContext,
+		ConnState:                    requestConnState,
 		BaseContext:                  func(net.Listener) context.Context { return ctx },
 	}
 	if mode != redirectMode {
@@ -371,6 +399,10 @@ func (p *Plane) serve(
 type connKey struct{}
 
 func connContext(ctx context.Context, c net.Conn) context.Context {
+	if tracked := http1Conn(c); tracked != nil {
+		ctx = context.WithValue(ctx, requestConnKey{}, tracked)
+		c = tracked.Conn
+	}
 	if secure, ok := c.(*tls.Conn); ok {
 		c = secure.NetConn()
 	}

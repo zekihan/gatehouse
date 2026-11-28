@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/cryptobyte"
@@ -44,8 +45,8 @@ func (c *sourceConn) Read(p []byte) (int, error) {
 }
 
 func (c *sourceConn) CloseWrite() error {
-	if tcp, ok := c.Conn.(*net.TCPConn); ok {
-		return tcp.CloseWrite()
+	if half, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return half.CloseWrite()
 	}
 	return c.Close()
 }
@@ -205,6 +206,27 @@ func parseNameList(names cryptobyte.String, invalid error) (string, error) {
 	return name, nil
 }
 
+type countedConn struct {
+	net.Conn
+
+	open   *atomic.Int64
+	closed atomic.Bool
+}
+
+func (c *countedConn) Close() error {
+	if c.closed.CompareAndSwap(false, true) {
+		c.open.Add(-1)
+	}
+	return c.Conn.Close()
+}
+
+func (c *countedConn) CloseWrite() error {
+	if half, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return half.CloseWrite()
+	}
+	return c.Close()
+}
+
 type edgeListener struct {
 	net.Listener
 
@@ -252,6 +274,7 @@ func (l *edgeListener) Close() error {
 }
 
 func (l *edgeListener) run(ctx context.Context) {
+	open := l.proxy.metrics.connectionsFor(l.port)
 	var workers sync.WaitGroup
 	defer close(l.stopped)
 	defer workers.Wait()
@@ -268,8 +291,10 @@ func (l *edgeListener) run(ctx context.Context) {
 			_ = c.Close()
 			continue
 		}
+		open.Add(1)
+		tracked := &countedConn{Conn: c, open: open}
 		workers.Go(func() {
-			ready, upstream, fence := l.prepare(ctx, c)
+			ready, upstream, fence := l.prepare(ctx, tracked)
 			<-l.slots
 			if upstream != nil {
 				streamCtx, finish := fence.track(ctx)
@@ -277,12 +302,12 @@ func (l *edgeListener) run(ctx context.Context) {
 				splice(streamCtx, ready, upstream, defaultDeadline)
 			} else if ready != nil {
 				select {
-				case l.ready <- ready:
+				case l.ready <- wrapRequestConn(ready, l.proxy, l.port):
 				case <-l.done:
 					_ = ready.Close()
 				}
 			} else {
-				_ = c.Close()
+				_ = tracked.Close()
 			}
 		})
 	}

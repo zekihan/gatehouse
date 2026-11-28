@@ -324,10 +324,12 @@ func (s *compiled) authorizeRequest(
 ) (authResult, bool) {
 	result, allowed := s.authorize(w, req, registry, info)
 	if !allowed && (w.status == 0 || w.status >= http.StatusBadRequest) {
-		record.deny = "auth"
+		record.policyDeny("auth")
 	}
 	if allowed && strings.HasPrefix(registry.Protection, "oidc:") {
-		record.identity = req.Header.Get("X-Auth-Request-User")
+		if identity := req.Header.Get("X-Auth-Request-User"); identity != "" {
+			info.SetClientIdentity(identity)
+		}
 	}
 	return result, allowed
 }
