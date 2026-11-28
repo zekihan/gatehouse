@@ -85,7 +85,7 @@ func runBench(t *testing.T, binary string) {
 	checkBenchFixture(t, dir)
 
 	driver := os.Getenv("GATEHOUSE_BENCH_DRIVER")
-	features := "proxy,identity,streaming,routing,tls,mtls,forward-auth,uploads,alpn,observability"
+	features := "proxy,identity,streaming,routing,tls,mtls,crowdsec,limits,forward-auth,uploads,alpn,observability"
 	if driver == "" {
 		driver = filepath.Join(fixtures, "driver.py")
 	} else {
