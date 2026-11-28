@@ -2,9 +2,11 @@ package dataplane
 
 import (
 	"bytes"
+	"fmt"
 	"net/http"
 	"net/url"
 	"path"
+	"runtime/debug"
 	"strings"
 	"testing"
 
@@ -38,6 +40,7 @@ func FuzzClientHello(f *testing.F) {
 	})
 	f.Add(record.BytesOrPanic())
 	f.Fuzz(func(t *testing.T, input []byte) {
+		defer rejectPanic(t)
 		r := bytes.NewReader(input)
 		_, replay, err := peekHello(r)
 		if err == nil && !bytes.Equal(replay, input[:len(input)-r.Len()]) {
@@ -51,6 +54,7 @@ func FuzzProxyProtocol(f *testing.F) {
 	f.Add(append(append([]byte(nil), proxySignature...), 0x21, 0x11, 0, 12,
 		192, 0, 2, 1, 192, 0, 2, 2, 0x20, 0, 0x20, 0))
 	f.Fuzz(func(t *testing.T, input []byte) {
+		defer rejectPanic(t)
 		r := bytes.NewReader(input)
 		source, err := readProxyV2(r)
 		if err != nil {
@@ -75,6 +79,7 @@ func FuzzNormalizedPath(f *testing.F) {
 	f.Add("/café")
 	f.Add("/")
 	f.Fuzz(func(t *testing.T, target string) {
+		defer rejectPanic(t)
 		u, err := url.ParseRequestURI(target)
 		if err != nil {
 			return
@@ -102,14 +107,72 @@ func FuzzQueryRedaction(f *testing.F) {
 	f.Add("", "fixture")
 	f.Add("view=grid", "value with separators &=;")
 	f.Fuzz(func(t *testing.T, extra, value string) {
+		defer rejectPanic(t)
 		secret := url.QueryEscape("synthetic-redaction-marker:" + value)
-		query := "X-Amz-Signature=" + secret + "&other=" + url.QueryEscape(extra)
-		redacted := redactedQuery(query)
-		if !strings.HasPrefix(redacted, "X-Amz-Signature=[redacted]&") {
-			t.Fatal("sensitive query field was not redacted")
-		}
-		if redactedQuery(redacted) != redacted {
-			t.Fatal("query redaction is not idempotent")
+		other := url.QueryEscape(extra)
+		for _, name := range sensitiveParameters {
+			encoded := fmt.Sprintf("%%%02X%s", name[0], name[1:])
+			checkRedacted(t, name+"="+secret+"&other="+other, name)
+			checkRedacted(t, encoded+"="+secret+"&other="+other, encoded)
 		}
 	})
+}
+
+func checkRedacted(t *testing.T, query, name string) {
+	t.Helper()
+	redacted := redactedQuery(query)
+	if !strings.HasPrefix(redacted, name+"=[redacted]&") {
+		t.Fatalf("sensitive query field %s was not redacted: %q", name, redacted)
+	}
+	if redactedQuery(redacted) != redacted {
+		t.Fatal("query redaction is not idempotent")
+	}
+}
+
+func FuzzStripHeaders(f *testing.F) {
+	f.Add("X-Real-IP", "203.0.113.5", "X-App", "ok", "close")
+	f.Add("X_Forwarded_For", "203.0.113.9", "Upgrade", "websocket", "upgrade, X-App")
+	f.Add("X-Edge-Secret", "synthetic", "Cf-Connecting-IP", "203.0.113.8", "")
+	f.Fuzz(func(t *testing.T, left, leftValue, right, rightValue, connection string) {
+		defer rejectPanic(t)
+		headers := make(http.Header)
+		if left != "" {
+			headers.Add(left, leftValue)
+		}
+		if right != "" {
+			headers.Add(right, rightValue)
+		}
+		if connection != "" {
+			headers.Add("Connection", connection)
+		}
+		headers.Add("X-Real-IP", "192.0.2.1")
+		headers.Add("X-Edge-Secret", "synthetic")
+		headers.Add("X-App-User", "ada")
+		state := &compiled{edgeHeaders: map[string]bool{"x-edge-secret": true}}
+		state.stripHeaders(headers)
+		for name := range headers {
+			if state.reserved(name) {
+				t.Fatalf("reserved header %q survived", name)
+			}
+		}
+		switch values := headers.Values("Connection"); len(values) {
+		case 0:
+			if _, ok := headers["Upgrade"]; ok {
+				t.Fatal("upgrade header survived without an upgrade connection")
+			}
+		case 1:
+			if values[0] != "Upgrade" {
+				t.Fatalf("connection header %q", values)
+			}
+		default:
+			t.Fatalf("connection header %q", values)
+		}
+	})
+}
+
+func rejectPanic(t *testing.T) {
+	t.Helper()
+	if recovered := recover(); recovered != nil {
+		t.Fatalf("panic: %v\n%s", recovered, debug.Stack())
+	}
 }
