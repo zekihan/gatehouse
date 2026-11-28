@@ -1,28 +1,23 @@
 # Gatehouse conformance
 
-Run `make test/integration`. CI launches the real Gatehouse binary to validate
-operator configuration, creates disposable certificate and route fixtures, and
-starts loopback app, Authelia and LAPI mocks. All 53 wire assertions run through
-the integration harness. The current scaffold reports the wire assertions
-below as skips until the corresponding server features are available.
+Run `make test/integration`. The harness builds the real Gatehouse binary,
+generates disposable certificates and routes, and starts loopback app,
+Authelia and LAPI mocks. The default driver converts the fixtures to an
+operator configuration and a file snapshot. It runs 50 wire checks. The
+CrowdSec and shared limit wire checks require their policy implementations.
 
-## Running wire checks
+## Using a different driver
 
-Set `GATEHOUSE_BENCH_DRIVER` to the absolute path to an executable that
-translates `$BENCH_DIR/bench.json` into server resources and runs the
-`$GATEHOUSE_BINARY` supplied by the test. The driver runs in `$BENCH_DIR`, where
-certificate paths are relative. It must bind loopback ports `$BENCH_TLS_PORT`
-and `$BENCH_METRICS_PORT` and signal readiness by creating `$BENCH_READY` once
-the proxy is ready to serve. The runner captures stdout and stderr in the
-fixture directory. Keep request logs on stdout and diagnostics on stderr.
-The app, auth and LAPI URLs are also passed in `$BENCH_APP_URL`,
-`$BENCH_AUTH_URL` and `$BENCH_LAPI_URL`.
+Set `GATEHOUSE_BENCH_DRIVER` to the absolute path to an executable. It runs
+in `$BENCH_DIR`, which holds `bench.json` and the relative certificate paths.
+It must bind loopback ports `$BENCH_TLS_PORT` and `$BENCH_METRICS_PORT` and
+create `$BENCH_READY` when ready. The proxy binary path is in
+`$GATEHOUSE_BINARY`. The mocks are at `$BENCH_APP_URL`, `$BENCH_AUTH_URL`
+and `$BENCH_LAPI_URL`. Write request logs to stdout and diagnostics to stderr.
+The driver runs every group by default. Set `GATEHOUSE_BENCH_FEATURES` to
+a comma-separated list of groups to limit coverage.
 
-The driver runs all suites by default. To enable suites as features land, set
-`GATEHOUSE_BENCH_FEATURES` to a comma-separated list of the names below. The
-runner accounts for every check and fails on a mismatch.
-
-## Wire checks skipped in the scaffold
+## Wire check groups
 
 - **proxy** (14). page status, page gzip, page gunzip size, hsts, frame options, nosniff, xss, referrer, permissions, coop, corp, robots, server stripped, powered-by stripped.
 - **identity** (5). x-real-ip, x-forwarded-for, x-forwarded-proto, x-forwarded-host, spoof headers stripped.
