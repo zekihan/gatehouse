@@ -39,8 +39,9 @@ import (
 )
 
 const (
-	testNamespace = "bazarr"
-	testHost      = "bazarr.noqer.com"
+	testNamespace      = "bazarr"
+	testServiceAccount = "gatehouse"
+	testHost           = "bazarr.noqer.com"
 )
 
 type testCluster struct {
@@ -302,7 +303,7 @@ func (c *testCluster) createPolicy(name, section string) {
 func (c *testCluster) credentials() *rest.Config {
 	c.t.Helper()
 	token, err := c.core.ServiceAccounts(defaultNamespace).
-		CreateToken(c.t.Context(), "gatehouse", &auth.TokenRequest{}, metav1.CreateOptions{})
+		CreateToken(c.t.Context(), testServiceAccount, &auth.TokenRequest{}, metav1.CreateOptions{})
 	if err != nil {
 		c.t.Fatal("creating disposable service account token failed")
 	}
@@ -359,7 +360,8 @@ func (c *testCluster) start(name string, offline *atomic.Bool) *Controller {
 		Namespace: defaultNamespace,
 		Labels:    map[string]string{"app.kubernetes.io/name": "gatehouse"},
 		Spec: corev1.PodSpec{
-			SchedulerName: "gatehouse-test-disabled",
+			SchedulerName:      "gatehouse-test-disabled",
+			ServiceAccountName: testServiceAccount,
 			Containers: []corev1.Container{
 				{Name: "fixture", Image: "unused.invalid/placeholder"},
 			},
