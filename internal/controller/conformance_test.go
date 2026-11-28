@@ -91,6 +91,10 @@ func TestGatewayAPIConformance(t *testing.T) {
 		},
 	}, metav1.CreateOptions{})
 	check(t, err)
+	_, err = cluster.core.ServiceAccounts(ns).Create(t.Context(), &corev1.ServiceAccount{
+		Name: testServiceAccount,
+	}, metav1.CreateOptions{})
+	check(t, err)
 	pod := conformancePod(t, cluster)
 	scheme := runtime.NewScheme()
 	check(t, corev1.AddToScheme(scheme))
@@ -159,7 +163,8 @@ func conformancePod(t *testing.T, cluster *testCluster) *corev1.Pod {
 		Name:   "conformance-gatehouse",
 		Labels: map[string]string{"app.kubernetes.io/name": "gatehouse"},
 		Spec: corev1.PodSpec{
-			SchedulerName: "gatehouse-test-disabled",
+			SchedulerName:      "gatehouse-test-disabled",
+			ServiceAccountName: testServiceAccount,
 			Containers: []corev1.Container{
 				{Name: "fixture", Image: "unused.invalid/placeholder"},
 			},
