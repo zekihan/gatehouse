@@ -108,11 +108,14 @@ func selectHost(
 		return registry, nil
 	}
 	host := port.hosts[hostName]
-	if !known || host == nil || host.tls == nil ||
-		!slices.Contains(registry.Ports, record.listener) {
-		if known && registry.Protection == "deny" {
+	allowedPort := slices.Contains(registry.Ports, record.listener)
+	if !known || !allowedPort || host == nil || host.tls == nil {
+		switch {
+		case registry.Protection == "deny":
 			reject(w, record, "registry_host", http.StatusForbidden)
-		} else {
+		case allowedPort && isMTLS(registry.Protection):
+			reject(w, record, "mtls_policy", http.StatusForbidden)
+		default:
 			reject(w, record, "listener_host", http.StatusMisdirectedRequest)
 		}
 		return registry, nil
@@ -143,12 +146,15 @@ func (p *Plane) applyPolicies(
 		reject(w, record, "invalid_policy", status)
 		return
 	}
+	var identity streamIdentity
 	if isMTLS(registry.Protection) {
-		if !authorizeMTLS(w, req, route.mtls, host) {
+		var allowed bool
+		identity, allowed = authorizeMTLS(w, req, route.mtls, host)
+		if !allowed {
 			record.deny = "mtls_policy"
 			return
 		}
-		record.identity = req.Header.Get(identityHeader)
+		record.identity = identity.name
 		authorizeForwardedMTLS(req.Header, route.rule.MTLS)
 	}
 	info := RequestInfo{
@@ -175,7 +181,7 @@ func (p *Plane) applyPolicies(
 			defer release()
 		}
 	}
-	delegated, allows := state.authorize(p, w, req, registry, info)
+	auth, allows := state.authorize(p, w, req, registry, info)
 	if !allows {
 		record.deny = "auth"
 		return
@@ -189,16 +195,16 @@ func (p *Plane) applyPolicies(
 		req,
 		record,
 		path,
-		delegated,
-		isMTLS(registry.Protection),
+		auth,
+		identity,
 	)
 }
 
 func (p *Plane) proxyAuthorized(state *compiled, host *edgeHost, route *route, w *responseWriter,
-	req *http.Request, record *requestRecord, path, delegated string, protectStream bool,
+	req *http.Request, record *requestRecord, path string, auth authResult, identity streamIdentity,
 ) {
-	if protectStream || req.Header.Get("Upgrade") != "" {
-		ctx, finish := host.fence.track(req.Context())
+	if identity.name != "" || req.Header.Get("Upgrade") != "" {
+		ctx, finish := host.trackRequest(req.Context(), req, route, identity)
 		defer finish()
 		if ctx.Err() != nil {
 			reject(w, record, "snapshot_replaced", http.StatusServiceUnavailable)
@@ -206,7 +212,7 @@ func (p *Plane) proxyAuthorized(state *compiled, host *edgeHost, route *route, w
 		}
 		req = req.WithContext(ctx)
 	}
-	p.proxyRequest(state, route, w, req, record, path, delegated)
+	p.proxyRequest(state, route, w, req, record, path, auth)
 }
 
 func authorizeForwardedMTLS(header http.Header, policy *snapshot.MTLSPolicy) {
@@ -234,7 +240,8 @@ func (p *Plane) proxyRequest(
 	w *responseWriter,
 	req *http.Request,
 	record *requestRecord,
-	path, delegated string,
+	path string,
+	auth authResult,
 ) {
 	target := route.choose()
 	if !target.available() {
@@ -244,11 +251,14 @@ func (p *Plane) proxyRequest(
 	record.backend = target.name
 	// Keep the inbound request immutable for logging and authorization.
 	r := req.Clone(req.Context())
-	applyRewrite(r, route, path, delegated)
-	if rewrite := route.rule.Rewrite; rewrite != nil && rewrite.Host != "" {
+	applyRewrite(r, route, path, auth.delegation)
+	if rewrite := route.rule.Rewrite; auth.delegation == nil && rewrite != nil &&
+		rewrite.Host != "" {
 		r.Host = rewrite.Host
 	}
 	applyFilter(r.Header, route.rule.RequestHeaders, state.reserved)
+	auth.stripCredentials(r.Header)
+	auth.stripCredentials(r.Trailer)
 	setForwarded(r, record.client)
 	r.Header.Set("X-Forwarded-Host", req.Host)
 	compression := state.compression
@@ -280,12 +290,14 @@ func (p *Plane) proxyRequest(
 	target.proxy.ServeHTTP(w, r.WithContext(ctx))
 }
 
-func applyRewrite(r *http.Request, route *route, path, delegated string) {
+func applyRewrite(r *http.Request, route *route, path string, delegation *config.Delegation) {
 	switch {
 	case path == "/metrics" || path == "/metrics/":
 		rewritePath(r, "/")
-	case delegated != "":
-		rewritePath(r, delegated)
+	case delegation != nil:
+		if delegation.Rewrite != "" {
+			rewritePath(r, delegation.Rewrite)
+		}
 	case route.rule.Rewrite != nil && route.rule.Rewrite.Path != "":
 		rewrite := route.rule.Rewrite
 		next := rewrite.Path

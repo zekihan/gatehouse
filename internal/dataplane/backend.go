@@ -63,7 +63,7 @@ func (r *route) addBackend(
 		pooled := value.transport(false)
 		fresh := value.transport(true)
 		state.transports = append(state.transports, pooled, fresh)
-		value.proxy = value.reverseProxy(pooled, fresh, r.rule.ResponseHeaders)
+		value.proxy = value.reverseProxy(pooled, fresh, r.rule.ResponseHeaders, state.reserved)
 	}
 }
 
@@ -290,6 +290,7 @@ func (p *proxyBuffers) Put(b []byte) {
 func (b *backend) reverseProxy(
 	pooled, fresh *http.Transport,
 	headers snapshot.HeaderFilter,
+	reserved func(string) bool,
 ) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		BufferPool: buffers,
@@ -309,7 +310,7 @@ func (b *backend) reverseProxy(
 		},
 		Transport: roundTripper{backend: b, pooled: pooled, fresh: fresh},
 		ModifyResponse: func(resp *http.Response) error {
-			applyFilter(resp.Header, headers, nil)
+			applyFilter(resp.Header, headers, reserved)
 			if b.cookie != "" && resp.StatusCode >= 200 && resp.StatusCode < 400 {
 				state := requestBackend(resp.Request)
 				resp.Header.Add("Set-Cookie", (&http.Cookie{
