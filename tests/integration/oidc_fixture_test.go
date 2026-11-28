@@ -60,6 +60,7 @@ type oidcFixture struct {
 	cert        *snapshot.KeyPair
 	roots       *x509.CertPool
 	issuer      string
+	target      atomic.Pointer[url.URL]
 	dockerID    string
 	dir         string
 	spec        string
@@ -87,29 +88,12 @@ func newOIDCFixture(t *testing.T) *oidcFixture {
 	userHash := autheliaHash(t, f.password)
 	f.spec = fmt.Sprintf(autheliaConfig, rand.Text(), rand.Text(), rand.Text(), clientHash)
 	writeFixture(t, f.dir, "users.yml", fmt.Sprintf(autheliaUsers, userHash))
-	f.writeConfig(t, "initial")
-	user := strconv.Itoa(os.Getuid()) + ":" + strconv.Itoa(os.Getgid())
-	port := net.JoinHostPort("127.0.0.1", loopbackPort(t))
-	id := docker(t, "run", "--detach", "--publish", port+":9091",
-		"--user", user, "--entrypoint", "/app/authelia",
-		"--volume", f.dir+":/config", autheliaImage, "--config", "/config/configuration.yml")
-	f.dockerID = id
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 10*time.Second)
-		defer cancel()
-		if err := exec.CommandContext(ctx, "docker", "rm", "--force", id).Run(); err != nil {
-			t.Errorf("remove disposable Authelia: %v", err)
-		}
-	})
-	target, err := url.Parse("http://" + port)
-	if err != nil {
-		t.Fatal(err)
-	}
+	f.startAuthelia(t, "initial")
 	proxy := &httputil.ReverseProxy{
 		ModifyResponse: f.recordTokenResponse,
 		ErrorLog:       log.New(io.Discard, "", 0),
 		Rewrite: func(r *httputil.ProxyRequest) {
-			r.SetURL(target)
+			r.SetURL(f.target.Load())
 			r.Out.Host = r.In.Host
 			r.SetXForwarded()
 		},
@@ -223,9 +207,36 @@ func safeOAuthError(code string) string {
 
 func (f *oidcFixture) rotateSigningKey(t *testing.T) {
 	t.Helper()
-	f.writeConfig(t, "rotated")
-	docker(t, "restart", "--time", "0", f.dockerID)
+	docker(t, "rm", "--force", f.dockerID)
+	f.dockerID = ""
+	f.startAuthelia(t, "rotated")
 	f.waitForIssuer(t, "rotated")
+}
+
+func (f *oidcFixture) startAuthelia(t *testing.T, key string) {
+	t.Helper()
+	f.writeConfig(t, key)
+	user := strconv.Itoa(os.Getuid()) + ":" + strconv.Itoa(os.Getgid())
+	id := docker(t, "run", "--detach", "--publish", "127.0.0.1::9091",
+		"--user", user, "--entrypoint", "/app/authelia",
+		"--volume", f.dir+":/config", autheliaImage, "--config", "/config/configuration.yml")
+	f.dockerID = id
+	t.Cleanup(func() {
+		if f.dockerID != id {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 10*time.Second)
+		defer cancel()
+		if err := exec.CommandContext(ctx, "docker", "rm", "--force", id).Run(); err != nil {
+			t.Errorf("remove disposable Authelia: %v", err)
+		}
+	})
+	backend := docker(t, "port", id, "9091/tcp")
+	target, err := url.Parse("http://" + backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.target.Store(target)
 }
 
 func (f *oidcFixture) waitForIssuer(t *testing.T, key string) {
