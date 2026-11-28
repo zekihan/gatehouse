@@ -4,6 +4,7 @@ go 1.27.4
 
 require (
 	github.com/andybalholm/brotli v1.2.0
+	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/hashicorp/memberlist v0.7.0
 	github.com/klauspost/compress v1.18.2
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
@@ -12,6 +13,7 @@ require (
 	github.com/zekihan/traefik-real-ip v0.4.0
 	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/crypto v0.54.0
+	golang.org/x/oauth2 v0.36.0
 	k8s.io/api v0.37.2
 	k8s.io/apimachinery v0.37.2
 	k8s.io/client-go v0.37.2
@@ -22,6 +24,7 @@ require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/emicklei/go-restful/v3 v3.13.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.1 // indirect
+	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-openapi/jsonpointer v1.0.0 // indirect
 	github.com/go-openapi/jsonreference v1.0.0 // indirect
@@ -58,7 +61,6 @@ require (
 	github.com/x448/float16 v0.8.4 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	golang.org/x/net v0.57.0 // indirect
-	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.25.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/term v0.45.0 // indirect

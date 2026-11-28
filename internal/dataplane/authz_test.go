@@ -237,10 +237,7 @@ func TestForwardAuthRegistryGrants(t *testing.T) {
 		},
 	}
 	input.Config.Hosts[fixtureHost] = registry
-	p := New(Options{OIDC: func(w http.ResponseWriter, _ *http.Request, _ RequestInfo) bool {
-		w.WriteHeader(http.StatusTeapot)
-		return false
-	}})
+	p := New(Options{})
 	if err := p.Update(input); err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +256,7 @@ func TestForwardAuthRegistryGrants(t *testing.T) {
 		{name: "wrong method", path: "/probe", method: http.MethodPost, credential: "Bearer fixture", code: 403},
 		{name: "prefix grant requires exact match", path: "/prefix", credential: "Bearer fixture", code: 403},
 		{name: "encoded grant", path: "/%70robe", credential: "Bearer fixture", code: 403},
-		{name: "ordinary OIDC", path: "/", code: 418},
+		{name: "OIDC without credentials", path: "/", code: http.StatusServiceUnavailable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req, err := http.NewRequestWithContext(

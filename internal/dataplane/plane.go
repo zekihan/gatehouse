@@ -23,6 +23,7 @@ import (
 
 	"github.com/zekihan/gatehouse/internal/config"
 	"github.com/zekihan/gatehouse/internal/observability"
+	"github.com/zekihan/gatehouse/internal/oidclogin"
 	"github.com/zekihan/gatehouse/internal/snapshot"
 )
 
@@ -62,7 +63,7 @@ func (i RequestInfo) SetDenyReason(reason string) {
 }
 
 // Options connects independently managed request policies to the data plane.
-// Policies return false after writing a refusal. A nil OIDC hook fails closed.
+// Policies return false after writing a refusal.
 type Options struct {
 	OnListening     func()
 	AccessLog       io.Writer
@@ -70,7 +71,7 @@ type Options struct {
 	LimiterMetrics  func() observability.LimiterMetrics
 	CrowdSec        func(http.ResponseWriter, *http.Request, RequestInfo) bool
 	Limits          func(http.ResponseWriter, *http.Request, RequestInfo) (release func(), allowed bool)
-	OIDC            func(http.ResponseWriter, *http.Request, RequestInfo) bool
+	OIDCTransport   http.RoundTripper
 	PolicyReady     func(crowdSecEnabled bool) bool
 }
 
@@ -89,6 +90,7 @@ type compiled struct {
 	registry            map[string]config.Host
 	edgeHeaders         map[string]bool
 	forwardAuth         map[string]config.ForwardAuthClass
+	oidc                map[string]*oidclogin.Class
 	compression         config.Compression
 	deviceTLSExceptions int
 	defaults            config.Defaults
@@ -148,6 +150,15 @@ func (p *Plane) Update(input *snapshot.Snapshot) error {
 		compression:         input.Config.Defaults.Compression,
 		deviceTLSExceptions: len(input.Config.DeviceTrust.Exceptions),
 		defaults:            input.Config.Defaults,
+		oidc:                make(map[string]*oidclogin.Class, len(input.Config.AuthClasses)),
+	}
+	for name, class := range input.Config.AuthClasses {
+		var previous *oidclogin.Class
+		if old != nil {
+			previous = old.oidc[name]
+		}
+		next.oidc[name] = oidclogin.NewClass(name, class, input.DataPlane.OIDCSecrets,
+			p.opts.OIDCTransport, previous)
 	}
 	for number, options := range input.Config.Ports {
 		port, err := newPort(options, input.DataPlane.EdgeSecrets)

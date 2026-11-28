@@ -15,6 +15,7 @@ import (
 	mtls "github.com/zekihan/traefik-mtls-authz"
 
 	"github.com/zekihan/gatehouse/internal/config"
+	"github.com/zekihan/gatehouse/internal/oidclogin"
 	"github.com/zekihan/gatehouse/internal/snapshot"
 )
 
@@ -235,6 +236,7 @@ func (s *compiled) forward(
 			}
 		}
 	}
+	oidclogin.StripCookies(probe.Header)
 	for _, name := range []string{"X-Real-Ip", "X-Forwarded-For", "X-Forwarded-Proto", "X-Forwarded-Host"} {
 		probe.Header[name] = r.Header[name]
 	}
@@ -281,8 +283,16 @@ func checkForwardResponse(w http.ResponseWriter, probe *http.Request, maxBytes i
 }
 
 func (s *compiled) authorize(
-	p *Plane, w http.ResponseWriter, req *http.Request, registry config.Host, info RequestInfo,
+	w http.ResponseWriter, req *http.Request, registry config.Host, info RequestInfo,
 ) (authResult, bool) {
+	kind, class, _ := strings.Cut(registry.Protection, ":")
+	if kind == "oidcCallback" {
+		s.oidc[class].Callback(w, req, info.Host, info.Path, time.Now())
+		return authResult{}, false
+	}
+	if kind == "oidc" && isAuthPath(info.Path) {
+		return authResult{}, s.oidc[class].Authorize(w, req, info.Host, info.Path, time.Now())
+	}
 	rule := info.Route
 	grant, delegated := delegatedPath(registry, info.Path, req.Method)
 	if grant != nil {
@@ -299,15 +309,43 @@ func (s *compiled) authorize(
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return authResult{}, false
 	}
-	if strings.HasPrefix(registry.Protection, "oidc:") ||
-		strings.HasPrefix(registry.Protection, "oidcCallback:") {
-		if p.opts.OIDC == nil {
-			http.Error(w, "Service Unavailable", http.StatusServiceUnavailable)
-			return authResult{}, false
-		}
-		return authResult{}, p.opts.OIDC(w, req, info)
+	if kind == "oidc" {
+		return authResult{}, s.oidc[class].Authorize(w, req, info.Host, info.Path, time.Now())
 	}
 	return authResult{}, true
+}
+
+func (s *compiled) authorizeRequest(
+	w *responseWriter,
+	req *http.Request,
+	registry config.Host,
+	info RequestInfo,
+	record *requestRecord,
+) (authResult, bool) {
+	result, allowed := s.authorize(w, req, registry, info)
+	if !allowed && (w.status == 0 || w.status >= http.StatusBadRequest) {
+		record.policyDeny("auth")
+	}
+	if allowed && strings.HasPrefix(registry.Protection, "oidc:") {
+		if identity := req.Header.Get("X-Auth-Request-User"); identity != "" {
+			info.SetClientIdentity(identity)
+		}
+	}
+	return result, allowed
+}
+
+func isAuthPath(path string) bool {
+	return path == oidclogin.SignInPath || path == oidclogin.SignOutPath
+}
+
+func nativeAuthRoute(registry config.Host, routes int, path string) *route {
+	kind, _, _ := strings.Cut(registry.Protection, ":")
+	if kind == "oidcCallback" || (kind == "oidc" && routes > 0 && isAuthPath(path)) {
+		return &route{rule: snapshot.Route{
+			Namespace: registry.Namespace, Name: "gatehouse-oidc", Path: path, Exact: true,
+		}}
+	}
+	return nil
 }
 
 func delegatedPath(registry config.Host, path, method string) (*config.Delegation, bool) {
