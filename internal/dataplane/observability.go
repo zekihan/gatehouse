@@ -9,10 +9,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
-	"slices"
-	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -132,49 +129,72 @@ type accessEntry struct {
 	Deny       string    `json:"deny_reason,omitempty"`
 }
 
-func (p *Plane) observe(w *responseWriter, r *http.Request, entry requestRecord, start time.Time) {
+func (r *requestRecord) policyDeny(reason string) {
+	if r.deny == "" {
+		r.deny = reason
+	}
+}
+
+func incomingRequest(r *http.Request) accessEntry {
+	entry := accessEntry{
+		Method:    r.Method,
+		Host:      r.Host,
+		Path:      r.URL.EscapedPath(),
+		Query:     r.URL.RawQuery,
+		Protocol:  r.Proto,
+		UserAgent: r.UserAgent(),
+		Referer:   r.Referer(),
+	}
+	if strings.ContainsAny(r.URL.Path, "?#") {
+		entry.Path = "[redacted]"
+	}
+	if r.TLS != nil {
+		entry.TLSVersion, entry.SNI = r.TLS.Version, r.TLS.ServerName
+	}
+	return entry
+}
+
+func (p *Plane) observe(
+	w *responseWriter,
+	record requestRecord,
+	entry accessEntry,
+	method string,
+	start time.Time,
+) {
 	status := w.status
 	if status == 0 {
 		status = 499
 	}
 	elapsed := time.Since(start)
-	in := entry.requestBytes.Load()
-	p.metrics.request(entry, status, r.Method, elapsed, in, w.bytes)
-	if p.opts.AccessLog == nil || entry.logOff {
+	in := record.requestBytes.Load()
+	p.metrics.request(record, status, method, elapsed, in, w.bytes)
+	if p.opts.AccessLog == nil || record.logOff {
 		return
 	}
-	ip := ""
-	if entry.client.IsValid() {
-		ip = entry.client.String()
+
+	entry.Time = start.UTC()
+	entry.Listener = record.listener
+	if record.client.IsValid() {
+		entry.ClientIP = record.client.String()
 	}
-	logged := accessEntry{
-		Time:      start.UTC(),
-		RequestID: fmt.Sprintf("%x-%x", start.UnixNano(), p.metrics.ids.Add(1)),
-		Listener:  entry.listener,
-		ClientIP:  ip,
-		Identity:  entry.identity,
-		Status:    status,
-		Method:    r.Method,
-		Host:      r.Host,
-		Path:      r.URL.EscapedPath(),
-		Query:     redactedQuery(r.URL.RawQuery),
-		Protocol:  r.Proto,
-		UserAgent: r.UserAgent(),
-		Referer:   redactedReferer(r.Referer()),
-		BytesIn:   in,
-		BytesOut:  w.bytes,
-		Duration:  elapsed.Seconds() * 1000,
-		Upstream:  entry.upstream.Seconds() * 1000,
-		Route:     entry.route,
-		Backend:   entry.backend,
-		Deny:      entry.deny,
+	entry.Identity, entry.Deny = record.identity, record.deny
+	entry.Route, entry.Backend = record.route, record.backend
+	entry.Status, entry.BytesIn, entry.BytesOut = status, in, w.bytes
+	entry.Duration, entry.Upstream = milliseconds(elapsed), milliseconds(record.upstream)
+	p.writeAccess(entry)
+}
+
+func milliseconds(d time.Duration) float64 { return float64(d) / float64(time.Millisecond) }
+
+func (p *Plane) writeAccess(entry accessEntry) {
+	if p.opts.AccessLog == nil {
+		return
 	}
-	if r.TLS != nil {
-		logged.TLSVersion, logged.SNI = r.TLS.Version, r.TLS.ServerName
-	}
+	entry.RequestID = fmt.Sprintf("%x-%x", entry.Time.UnixNano(), p.metrics.ids.Add(1))
+	entry.Query, entry.Referer = redactedQuery(entry.Query), redactedReferer(entry.Referer)
 	p.logMu.Lock()
 	defer p.logMu.Unlock()
-	if err := json.NewEncoder(p.opts.AccessLog).Encode(logged); err != nil {
+	if err := json.NewEncoder(p.opts.AccessLog).Encode(entry); err != nil {
 		p.metrics.logErrors.Add(1)
 	}
 }
@@ -220,183 +240,4 @@ func redactedReferer(value string) string {
 	u.User, u.Fragment, u.RawFragment = nil, "", ""
 	u.RawQuery = redactedQuery(u.RawQuery)
 	return u.String()
-}
-
-type metricKey struct {
-	port                   uint16
-	code                   int
-	route, backend, method string
-}
-
-type series struct {
-	count, bytesIn, bytesOut uint64
-	elapsed, upstream        time.Duration
-	latency, upstreamLatency [8]uint64
-}
-
-type metrics struct {
-	mu         sync.Mutex
-	ids        atomicCounter
-	logErrors  atomicCounter
-	requests   map[metricKey]series
-	handshakes map[string]uint64
-	denies     map[string]uint64
-}
-
-var latencyBounds = []time.Duration{
-	500 * time.Microsecond, time.Millisecond, 5 * time.Millisecond, 25 * time.Millisecond,
-	100 * time.Millisecond, 500 * time.Millisecond, time.Second, 10 * time.Second,
-}
-
-func (m *metrics) request(
-	entry requestRecord,
-	status int,
-	method string,
-	elapsed time.Duration,
-	in, out uint64,
-) {
-	switch method {
-	case "GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "CONNECT", "TRACE":
-	default:
-		method = "OTHER"
-	}
-	key := metricKey{
-		port:    entry.listener,
-		code:    status,
-		route:   entry.route,
-		backend: entry.backend,
-		method:  method,
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.requests == nil {
-		m.requests = make(map[metricKey]series)
-		m.denies = make(map[string]uint64)
-	}
-	s := m.requests[key]
-	s.count++
-	s.bytesIn += in
-	s.bytesOut += out
-	s.elapsed += elapsed
-	s.upstream += entry.upstream
-	for i, limit := range latencyBounds {
-		if elapsed <= limit {
-			s.latency[i]++
-		}
-		if entry.upstream <= limit {
-			s.upstreamLatency[i]++
-		}
-	}
-	m.requests[key] = s
-	if entry.deny != "" {
-		m.denies[entry.deny]++
-	}
-}
-
-func (m *metrics) handshake(result string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.handshakes == nil {
-		m.handshakes = make(map[string]uint64)
-	}
-	m.handshakes[result]++
-}
-
-func (p *Plane) Metrics() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		var text strings.Builder
-		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-		p.metrics.render(&text)
-		if p.opts.PolicyMetrics != nil {
-			p.opts.PolicyMetrics(&text)
-		}
-		if s := p.state.Load(); s != nil {
-			fmt.Fprintf(&text, "gatehouse_snapshot_digest_info{digest=%q} 1\n", s.digest)
-			for number, port := range s.ports {
-				for name, host := range port.hosts {
-					if host.tls != nil {
-						fmt.Fprintf(
-							&text,
-							"gatehouse_certificate_expiry_timestamp_seconds{listener=%q,host=%q} %d\n",
-							listenerName(
-								number,
-							),
-							name,
-							host.tls.Certificates[0].Leaf.NotAfter.Unix(),
-						)
-					}
-				}
-			}
-		}
-		fmt.Fprintf(&text, "gatehouse_access_log_errors_total %d\n", p.metrics.logErrors.Load())
-		if _, err := fmt.Fprint(w, text.String()); err != nil {
-			return
-		}
-	})
-}
-
-func (m *metrics) render(out *strings.Builder) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	keys := make([]metricKey, 0, len(m.requests))
-	for key := range m.requests {
-		keys = append(keys, key)
-	}
-	formatLabels := func(k metricKey) string {
-		return fmt.Sprintf("route=%q,listener=%q,backend=%q,code=%q,method=%q",
-			k.route, listenerName(k.port), k.backend, strconv.Itoa(k.code), k.method)
-	}
-	slices.SortFunc(keys, func(a, b metricKey) int {
-		return strings.Compare(formatLabels(a), formatLabels(b))
-	})
-	for _, key := range keys {
-		labels := formatLabels(key)
-		s := m.requests[key]
-		fmt.Fprintf(out, "gatehouse_requests_total{%s} %d\n", labels, s.count)
-		fmt.Fprintf(out, "gatehouse_request_bytes_total{%s} %d\n", labels, s.bytesIn)
-		fmt.Fprintf(out, "gatehouse_response_bytes_total{%s} %d\n", labels, s.bytesOut)
-		writeHistogram(
-			out,
-			"gatehouse_request_duration_seconds",
-			labels,
-			s.latency,
-			s.elapsed,
-			s.count,
-		)
-		writeHistogram(
-			out,
-			"gatehouse_upstream_duration_seconds",
-			labels,
-			s.upstreamLatency,
-			s.upstream,
-			s.count,
-		)
-	}
-	for result, n := range m.handshakes {
-		fmt.Fprintf(out, "gatehouse_tls_handshakes_total{result=%q} %d\n", result, n)
-	}
-	for reason, n := range m.denies {
-		fmt.Fprintf(out, "gatehouse_denies_total{reason=%q} %d\n", reason, n)
-	}
-}
-
-func writeHistogram(
-	out *strings.Builder,
-	name, labels string,
-	buckets [8]uint64,
-	sum time.Duration,
-	count uint64,
-) {
-	for i, n := range buckets {
-		fmt.Fprintf(
-			out,
-			"%s_bucket{%s,le=%q} %d\n",
-			name,
-			labels,
-			fmt.Sprint(latencyBounds[i].Seconds()),
-			n,
-		)
-	}
-	fmt.Fprintf(out, "%s_bucket{%s,le=\"+Inf\"} %d\n%s_sum{%s} %g\n%s_count{%s} %d\n",
-		name, labels, count, name, labels, sum.Seconds(), name, labels, count)
 }

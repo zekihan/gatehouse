@@ -652,7 +652,9 @@ func (c *testCluster) verifyInvalidOperator(controller *Controller) {
 	old := controller.Snapshot().Digest
 	c.operatorConfig([]byte("ports: unknown"))
 	await(c.t, "invalid update rejected with prior config still serving", func() bool {
-		return controller.configErrors.Load() > 0 && controller.Ready() &&
+		status := controller.ObservabilityState()
+		return status.ConfigErrors > 0 && status.OperatorConfigRejected &&
+			status.OperatorConfigGeneration != "" && controller.Ready() &&
 			controller.Snapshot().Digest == old &&
 			c.hasCondition(
 				gateways,
@@ -682,6 +684,10 @@ func (c *testCluster) verifyOutage() {
 	disconnected := c.start("gatehouse-disconnected", &offline)
 	await(c.t, "replica bootstrap before outage", func() bool { return disconnected.Ready() })
 	old := disconnected.Snapshot().Digest
+	lastSync := disconnected.ObservabilityState().APILastSyncTimestamp
+	if lastSync == 0 {
+		c.t.Fatal("API sync timestamp was not populated after connecting")
+	}
 	offline.Store(true)
 	select {
 	case <-c.t.Context().Done():
@@ -694,12 +700,15 @@ func (c *testCluster) verifyOutage() {
 		c.t.Fatal(c.t.Context().Err())
 	case <-time.After(reconcileInterval + time.Second):
 	}
-	if !disconnected.Ready() || disconnected.Snapshot().Digest != old {
+	if !disconnected.Ready() || disconnected.Snapshot().Digest != old ||
+		disconnected.ObservabilityState().APILastSyncTimestamp != lastSync {
 		c.t.Fatal("API outage disturbed the running replica's snapshot")
 	}
 	offline.Store(false)
 	await(c.t, "replica regains API and applies pending revocation", func() bool {
-		return disconnected.Snapshot().Digest != old && servedHost(disconnected).Certificate == nil
+		return disconnected.Snapshot().Digest != old &&
+			servedHost(disconnected).Certificate == nil &&
+			disconnected.ObservabilityState().APILastSyncTimestamp > lastSync
 	})
 }
 

@@ -42,11 +42,10 @@ func TestThreeEncryptedMembers(t *testing.T) {
 	waitFor(t, "release reaches all replicas", func() bool {
 		return probeAdmission(b.Limiter, cfg) && probeAdmission(c.Limiter, cfg)
 	})
-	var out bytes.Buffer
-	a.Limiter.Metrics(&out)
-	if !bytes.Contains(out.Bytes(), []byte("gatehouse_gossip_peers 2\n")) ||
-		!bytes.Contains(out.Bytes(), []byte("gatehouse_limiter_resync_pending 0\n")) {
-		t.Fatalf("unexpected cluster metrics: %s", out.String())
+	metrics := a.Limiter.Metrics()
+	if metrics.GossipPeers != 2 || metrics.ResyncPending || metrics.Isolated ||
+		len(metrics.PeerStaleness) != 2 {
+		t.Fatalf("unexpected cluster metrics: %+v", metrics)
 	}
 }
 

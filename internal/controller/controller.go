@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -22,6 +23,7 @@ import (
 	coordination "k8s.io/client-go/kubernetes/typed/coordination/v1"
 
 	"github.com/zekihan/gatehouse/internal/config"
+	"github.com/zekihan/gatehouse/internal/observability"
 	"github.com/zekihan/gatehouse/internal/snapshot"
 )
 
@@ -69,6 +71,7 @@ type Controller struct {
 	ready        atomic.Bool
 	configErrors atomic.Uint64
 	apiContact   atomic.Int64
+	startedAt    atomic.Int64
 	current      atomic.Pointer[published]
 	startup      atomic.Pointer[published]
 }
@@ -156,17 +159,32 @@ func (c *Controller) ReadyHTTP(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func (c *Controller) Metrics(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
-	apiStale := 0
-	if c.apiStale() {
-		apiStale = 1
+func (c *Controller) ObservabilityState() observability.ControllerState {
+	generation, rejected := c.OperatorStatus()
+	return observability.ControllerState{
+		OperatorConfigGeneration: generation,
+		OperatorConfigRejected:   rejected,
+		ConfigErrors:             c.configErrors.Load(),
+		APILastSyncTimestamp:     c.apiContact.Load(),
 	}
+}
+
+func (c *Controller) WriteMetrics(w io.Writer) {
+	state := c.ObservabilityState()
 	fmt.Fprintf(
 		w,
-		"gatehouse_config_errors %d\ngatehouse_kubernetes_api_stale %d\n",
-		c.configErrors.Load(),
-		apiStale,
+		"# TYPE gatehouse_config_errors counter\ngatehouse_config_errors %d\n",
+		state.ConfigErrors,
+	)
+	fmt.Fprintf(
+		w,
+		"# TYPE gatehouse_api_last_sync_timestamp gauge\ngatehouse_api_last_sync_timestamp %d\n",
+		state.APILastSyncTimestamp,
+	)
+	fmt.Fprintf(
+		w,
+		"# TYPE gatehouse_kubernetes_api_stale gauge\ngatehouse_kubernetes_api_stale %d\n",
+		observability.BoolMetric(c.apiStale()),
 	)
 }
 
@@ -175,7 +193,7 @@ func (c *Controller) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer c.ready.Store(false)
-	c.apiContact.Store(time.Now().Unix())
+	c.startedAt.Store(time.Now().Unix())
 
 	state, err := c.startWatches(ctx)
 	if err != nil {
@@ -267,6 +285,9 @@ func (s *watchState) watch(ctx context.Context, c *Controller, id key) error {
 
 func (c *Controller) apiStale() bool {
 	last := c.apiContact.Load()
+	if last == 0 {
+		last = c.startedAt.Load()
+	}
 	return last != 0 && time.Since(time.Unix(last, 0)) >= outageAlert
 }
 
