@@ -1,0 +1,60 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gatehouse
+  namespace: gatehouse
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gatehouse-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: gatehouse-controller
+subjects:
+- kind: ServiceAccount
+  name: gatehouse
+  namespace: gatehouse
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gatehouse-controller
+  namespace: gatehouse
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gatehouse-controller
+subjects:
+- kind: ServiceAccount
+  name: gatehouse
+  namespace: gatehouse
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gatehouse-controller
+  namespace: external-ingress
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gatehouse-controller
+subjects:
+- kind: ServiceAccount
+  name: gatehouse
+  namespace: gatehouse
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gatehouse-controller
+  namespace: external-secrets
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gatehouse-controller
+subjects:
+- kind: ServiceAccount
+  name: gatehouse
+  namespace: gatehouse

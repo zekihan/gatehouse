@@ -31,3 +31,9 @@ a comma-separated list of groups to limit coverage.
 - **uploads** (3). vm write, journald stream upload, journald method.
 - **alpn** (3). h2, h2 mtls, h1.
 - **observability** (2). JSON access log, metrics.
+
+`make test/controller` runs the Kubernetes suite in a disposable, privileged
+Docker container using the pinned k3s image. It installs the matching Gateway
+API and generated Gatehouse CRDs and runs the controller with a service account
+token scoped to the generated RBAC. The harness uses synthetic certificates,
+credentials, replica readiness, and upstream endpoints.
