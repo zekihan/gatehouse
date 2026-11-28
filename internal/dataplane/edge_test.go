@@ -29,15 +29,24 @@ func TestCloudflareIdentity(t *testing.T) {
 	}
 	for _, tc := range []struct {
 		name, peer, ip, secret, connection string
+		duplicateIP, duplicateSecret       bool
 		code                               int
 	}{
 		{name: "IPv4", ip: "198.51.100.3"},
 		{name: "IPv6", peer: "[2001:db8:100::2]:42", ip: "2001:db8::73", secret: "synthetic-previous"},
+		{name: "IPv4-mapped peer", peer: "[::ffff:192.0.2.2]:42", ip: "2001:db8::73"},
+		{name: "scoped peer", peer: "[2001:db8:100::2%test]:42", ip: "198.51.100.3"},
 		{name: "wrong peer", peer: "203.0.113.5:42", ip: "198.51.100.3", code: 403},
 		{name: "wrong secret", ip: "198.51.100.3", secret: "incorrect", code: 403},
+		{name: "missing secret", ip: "198.51.100.3", secret: "-", code: 403},
+		{name: "duplicate secret", ip: "198.51.100.3", duplicateSecret: true, code: 403},
 		{name: "missing IP", code: 403},
 		{name: "malformed IP", ip: "not-an-address", code: 400},
+		{name: "duplicate IP", ip: "198.51.100.3", duplicateIP: true, code: 400},
+		{name: "comma-separated IPs", ip: "198.51.100.3, 198.51.100.4", code: 400},
+		{name: "zone in IP assertion", ip: "2001:db8::73%test", code: 400},
 		{name: "nominated edge header", ip: "198.51.100.3", connection: "X_Edge_Test", code: 403},
+		{name: "nominated IP assertion", ip: "198.51.100.3", connection: "Cf_Connecting_Ip", code: 403},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := httptest.NewRequestWithContext(
@@ -54,10 +63,18 @@ func TestCloudflareIdentity(t *testing.T) {
 			if secret == "" {
 				secret = "synthetic-current"
 			}
-			r.Header.Set("X-Edge-Test", secret)
+			if secret != "-" {
+				r.Header.Set("X-Edge-Test", secret)
+			}
+			if tc.duplicateSecret {
+				r.Header.Add("X-Edge-Test", secret)
+			}
 			r.Header.Set("Cf-Ray", "kept")
 			if tc.ip != "" {
 				r.Header.Set("Cf-Connecting-Ip", tc.ip)
+			}
+			if tc.duplicateIP {
+				r.Header.Add("Cf-Connecting-Ip", tc.ip)
 			}
 			if tc.connection != "" {
 				r.Header.Set("Connection", tc.connection)

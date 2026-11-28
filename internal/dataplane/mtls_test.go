@@ -127,6 +127,13 @@ func assertMTLSRequest(t *testing.T, client *http.Client, path string, status in
 
 func clientCertificate(t *testing.T, pair *snapshot.KeyPair) (tls.Certificate, string) {
 	t.Helper()
+	return issueClientCertificate(t, pair, testIdentity, nil)
+}
+
+func issueClientCertificate(t *testing.T, pair *snapshot.KeyPair, identity string,
+	modify func(*x509.Certificate),
+) (tls.Certificate, string) {
+	t.Helper()
 	caBlock, rest := pem.Decode(pair.CertPEM)
 	keyBlock, extra := pem.Decode(pair.KeyPEM)
 	if caBlock == nil || keyBlock == nil || len(rest)+len(extra) != 0 {
@@ -144,7 +151,7 @@ func clientCertificate(t *testing.T, pair *snapshot.KeyPair) (tls.Certificate, s
 	if err != nil {
 		t.Fatal(err)
 	}
-	uri, err := url.Parse(testIdentity)
+	uri, err := url.Parse(identity)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,6 +162,9 @@ func clientCertificate(t *testing.T, pair *snapshot.KeyPair) (tls.Certificate, s
 		NotAfter:     time.Now().Add(time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	if modify != nil {
+		modify(template)
 	}
 	der, err := x509.CreateCertificate(rand.Reader, template, root, &key.PublicKey, issuer)
 	if err != nil {
