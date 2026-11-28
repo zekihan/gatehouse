@@ -112,10 +112,12 @@ func (p *edgePort) trusts(ip netip.Addr) bool {
 }
 
 type edgeHost struct {
-	fence       *hostFence
-	tls         *tls.Config
-	passthrough *backend
-	routes      []*route
+	fence          *hostFence
+	authKey        [32]byte
+	snapshotDigest string
+	tls            *tls.Config
+	passthrough    *backend
+	routes         []*route
 }
 
 func New(opts Options) *Plane {
@@ -153,7 +155,7 @@ func (p *Plane) Update(input *snapshot.Snapshot) error {
 			return fmt.Errorf("listener %d: %w", number, err)
 		}
 		if port.secret != "" {
-			next.edgeHeaders[foldHeader(port.secret)] = true
+			next.edgeHeaders[config.FoldHeader(port.secret)] = true
 		}
 		next.ports[number] = port
 	}
@@ -183,7 +185,9 @@ func (s *compiled) compileHosts(input *snapshot.Snapshot, old *compiled) {
 				continue
 			}
 			compiled := s.compileHost(input.Config, name, registry, host)
-			compiled.fence = newFence(input.Config, number, registry, host)
+			compiled.fence = newFence(input.Config, number, port, registry, host)
+			compiled.authKey = compiled.fence.authKey
+			compiled.snapshotDigest = s.digest
 			previous := old.host(number, name)
 			if previous != nil && previous.fence.key == compiled.fence.key &&
 				!compiled.fence.revoked {
@@ -207,6 +211,8 @@ func (s *compiled) revokeChanged(next *compiled) {
 			current := next.host(number, name)
 			if current == nil || current.fence != host.fence {
 				host.fence.revoke()
+			} else if host.authKey != current.authKey {
+				host.fence.refreshAuthentication(current)
 			}
 		}
 	}
@@ -240,6 +246,9 @@ func (s *compiled) compileHost(
 		h.routes = append(h.routes, r)
 	}
 	sortRoutes(h.routes)
+	for i, route := range h.routes {
+		route.position = i
+	}
 	return h
 }
 

@@ -18,7 +18,8 @@ type route struct {
 	rule     snapshot.Route
 	headers  []matcher
 	query    []matcher
-	mtls     http.Handler
+	mtls     *mtlsPolicy
+	position int
 	backends []weighted
 	total    uint64
 	index    atomicCounter

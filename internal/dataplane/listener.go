@@ -25,14 +25,15 @@ var proxySignature = []byte("\r\n\r\n\x00\r\nQUIT\n")
 type sourceConn struct {
 	net.Conn
 
-	source      *net.TCPAddr
-	replay      *bytes.Reader
-	socket      netip.Addr
-	identity    string
-	roots       *x509.CertPool
-	verifyMu    sync.Mutex
-	verifyRoots *x509.CertPool
-	verified    [][]*x509.Certificate
+	source       *net.TCPAddr
+	replay       *bytes.Reader
+	socket       netip.Addr
+	identity     string
+	trustKey     [32]byte
+	verifyMu     sync.Mutex
+	verifyDigest string
+	verifyKey    [32]byte
+	verified     [][]*x509.Certificate
 }
 
 func (c *sourceConn) RemoteAddr() net.Addr { return c.source }
@@ -369,7 +370,7 @@ func (l *edgeListener) establish(
 		l.proxy.metrics.handshake("passthrough")
 		return client, upstream, host.fence
 	}
-	client.roots = host.tls.ClientCAs
+	client.trustKey = host.authKey
 	secure := tls.Server(client, host.tls)
 	if err := secure.HandshakeContext(ctx); err != nil {
 		l.proxy.metrics.handshake("failed")
