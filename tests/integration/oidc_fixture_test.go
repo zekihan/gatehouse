@@ -33,6 +33,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/crypto/bcrypt"
+
 	"github.com/zekihan/gatehouse/internal/config"
 	"github.com/zekihan/gatehouse/internal/dataplane"
 	"github.com/zekihan/gatehouse/internal/snapshot"
@@ -313,15 +315,11 @@ func docker(t *testing.T, args ...string) string {
 
 func autheliaHash(t *testing.T, password string) string {
 	t.Helper()
-	out := docker(t, "run", "--rm", autheliaImage, "authelia", "crypto", "hash", "generate",
-		"pbkdf2", "--password", password, "--no-confirm")
-	for line := range strings.SplitSeq(out, "\n") {
-		if hash, found := strings.CutPrefix(line, "Digest: "); found {
-			return hash
-		}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		t.Fatalf("hash disposable Authelia credential: %v", err)
 	}
-	t.Fatal("Authelia did not return a password digest")
-	return ""
+	return string(hash)
 }
 
 func testCertificate(t *testing.T) (*snapshot.KeyPair, *x509.CertPool) {
