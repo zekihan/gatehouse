@@ -317,11 +317,16 @@ func docker(t *testing.T, args ...string) string {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
 	defer cancel()
-	output, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	var logs bytes.Buffer
+	if args[0] == "logs" {
+		cmd.Stderr = &logs
+	}
+	output, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("docker %s: %v", args[0], err)
 	}
-	return strings.TrimSpace(string(output))
+	return strings.TrimSpace(string(append(output, logs.Bytes()...)))
 }
 
 func autheliaHash(t *testing.T, password string) string {
