@@ -23,8 +23,24 @@ test/controller:
 test/conformance:
 	GO=$(GO) bash scripts/test-controller.sh conformance
 test/fuzz:
-	@set -e; for target in FuzzClientHello FuzzProxyProtocol FuzzNormalizedPath FuzzQueryRedaction; do \
+	@set -e; \
+	for target in FuzzParse; do \
+		$(GO) test -run='^$$' -fuzz="^$$target$$" -fuzztime=5s -parallel=2 ./internal/config; \
+	done; \
+	for target in FuzzSnapshot; do \
+		$(GO) test -run='^$$' -fuzz="^$$target$$" -fuzztime=5s -parallel=2 ./internal/crowdsec; \
+	done; \
+	for target in FuzzClientHello FuzzProxyProtocol FuzzNormalizedPath FuzzQueryRedaction FuzzStripHeaders; do \
 		$(GO) test -run='^$$' -fuzz="^$$target$$" -fuzztime=5s -parallel=2 ./internal/dataplane; \
+	done; \
+	for target in FuzzGossipFrame; do \
+		$(GO) test -run='^$$' -fuzz="^$$target$$" -fuzztime=5s -parallel=2 ./internal/limiter; \
+	done; \
+	for target in FuzzSessionCookie; do \
+		$(GO) test -run='^$$' -fuzz="^$$target$$" -fuzztime=5s -parallel=2 ./internal/oidclogin; \
+	done; \
+	for target in FuzzDigest; do \
+		$(GO) test -run='^$$' -fuzz="^$$target$$" -fuzztime=5s -parallel=2 ./internal/snapshot; \
 	done
 generate:
 	$(CONTROLLER_GEN) crd paths=./internal/policy/... output:crd:dir=deploy/crds
