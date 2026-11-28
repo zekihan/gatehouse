@@ -54,7 +54,7 @@ formatters:
     golines:
       max-len: 100
       tab-len: 4
-      shorten-comments: true
+      shorten-comments: false
       reformat-tags: true
       chain-split-dots: true
   exclusions:
@@ -385,6 +385,10 @@ linters:
       - comments
       - std-error-handling
     rules:
+      # Kubebuilder markers are parsed directives.
+      - path: internal/policy/v1alpha1/types.go
+        source: '^\s*// \+'
+        linters: [godot]
       - path: (.+)_test.go
         linters:
           - canonicalheader

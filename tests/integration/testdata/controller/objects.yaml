@@ -1,0 +1,193 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gatehouse-certificate
+  namespace: bazarr
+rules:
+- apiGroups: [""]
+  resources: [secrets]
+  resourceNames: [bazarr-tls]
+  verbs: [get, list, watch]
+- apiGroups: [""]
+  resources: [configmaps]
+  resourceNames: [bazarr-upstream-ca]
+  verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gatehouse-certificate
+  namespace: bazarr
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gatehouse-certificate
+subjects:
+- kind: ServiceAccount
+  name: gatehouse
+  namespace: gatehouse
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: gatehouse
+spec:
+  controllerName: gatehouse.noqer.com/controller
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: gatehouse
+  namespace: gatehouse
+spec:
+  gatewayClassName: gatehouse
+  addresses:
+  - type: IPAddress
+    value: 192.0.2.10
+  allowedListeners:
+    namespaces:
+      from: Selector
+      selector:
+        matchLabels:
+          gatehouse.noqer.com/listeners: allowed
+  listeners:
+  - name: http
+    port: 8000
+    protocol: HTTP
+  - name: mesh
+    port: 8445
+    protocol: TLS
+    hostname: mesh-fixture.noqer.com
+    tls:
+      mode: Passthrough
+    allowedRoutes:
+      namespaces:
+        from: Selector
+        selector:
+          matchLabels:
+            kubernetes.io/metadata.name: bazarr
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: ListenerSet
+metadata:
+  name: bazarr
+  namespace: bazarr
+spec:
+  parentRef:
+    name: gatehouse
+    namespace: gatehouse
+  listeners:
+  - name: https
+    port: 8443
+    protocol: HTTPS
+    hostname: bazarr.noqer.com
+    tls:
+      mode: Terminate
+      certificateRefs:
+      - name: bazarr-tls
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: bazarr
+  namespace: bazarr
+spec:
+  hostnames: [bazarr.noqer.com]
+  parentRefs:
+  - kind: ListenerSet
+    name: bazarr
+    sectionName: https
+  rules:
+  - name: web
+    matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: bazarr
+      port: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bazarr
+  namespace: bazarr
+spec:
+  selector:
+    app: bazarr-test
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8081
+---
+apiVersion: gatehouse.noqer.com/v1alpha1
+kind: BackendPolicy
+metadata:
+  name: bazarr
+  namespace: bazarr
+spec:
+  targetRefs:
+  - group: ""
+    kind: Service
+    name: bazarr
+    sectionName: http
+  dialTimeout: 20s
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mesh
+  namespace: bazarr
+spec:
+  selector:
+    app: mesh-test
+  ports:
+  - name: tls
+    port: 9443
+---
+apiVersion: gatehouse.noqer.com/v1alpha1
+kind: BackendPolicy
+metadata:
+  name: mesh
+  namespace: bazarr
+spec:
+  targetRefs:
+  - group: ""
+    kind: Service
+    name: mesh
+    sectionName: tls
+  clusterIP: true
+  proxyV2: true
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: TLSRoute
+metadata:
+  name: a-mesh-wildcard
+  namespace: bazarr
+spec:
+  hostnames: ["*.noqer.com"]
+  parentRefs:
+  - name: gatehouse
+    namespace: gatehouse
+    sectionName: mesh
+  rules:
+  - backendRefs:
+    - name: mesh
+      port: 9443
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: TLSRoute
+metadata:
+  name: mesh
+  namespace: bazarr
+spec:
+  hostnames: [mesh-fixture.noqer.com]
+  parentRefs:
+  - name: gatehouse
+    namespace: gatehouse
+    sectionName: mesh
+  rules:
+  - backendRefs:
+    - name: mesh
+      port: 9443

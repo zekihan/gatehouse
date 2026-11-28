@@ -1,0 +1,142 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gatehouse-controller
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  - services
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - discovery.k8s.io
+  resources:
+  - endpointslices
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - gatehouse.noqer.com
+  resources:
+  - backendpolicies
+  - routepolicies
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - gatehouse.noqer.com
+  resources:
+  - backendpolicies/status
+  - routepolicies/status
+  verbs:
+  - update
+- apiGroups:
+  - gateway.networking.k8s.io
+  resources:
+  - backendtlspolicies
+  - gatewayclasses
+  - gateways
+  - httproutes
+  - listenersets
+  - referencegrants
+  - tlsroutes
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - gateway.networking.k8s.io
+  resources:
+  - backendtlspolicies/status
+  - gatewayclasses/status
+  - gateways/status
+  - httproutes/status
+  - listenersets/status
+  - tlsroutes/status
+  verbs:
+  - update
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gatehouse-controller
+  namespace: external-ingress
+rules:
+- apiGroups:
+  - ""
+  resourceNames:
+  - device-ca
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gatehouse-controller
+  namespace: external-secrets
+rules:
+- apiGroups:
+  - ""
+  resourceNames:
+  - external-secrets-sops-ca
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gatehouse-controller
+  namespace: gatehouse
+rules:
+- apiGroups:
+  - ""
+  resourceNames:
+  - gatehouse-operator
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - list
+- apiGroups:
+  - ""
+  resourceNames:
+  - cloudflare-edge-auth
+  - gatehouse-bootstrap
+  - mtls-clients-v1-trust
+  resources:
+  - secrets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - create
+  - get
+  - list
+  - update

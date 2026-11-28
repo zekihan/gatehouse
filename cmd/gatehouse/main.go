@@ -29,17 +29,18 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return 0
 		}
 	}
-	if len(args) > 0 && args[0] == "serve" {
-		if err := serveFile(args[1:], stdout, stderr); err != nil {
-			fmt.Fprintln(stderr, err)
-			return 1
+	if len(args) > 0 {
+		switch args[0] {
+		case "serve":
+			return serverExit(serveFile(args[1:], stdout, stderr), stderr)
+		case "serve-kubernetes":
+			return serverExit(serveKubernetes(args[1:], stdout, stderr), stderr)
 		}
-		return 0
 	}
 	if len(args) != 2 || args[0] != "validate" {
 		fmt.Fprintln(
 			stderr,
-			"usage: gatehouse serve --config <file> --snapshot <file> | validate <file> | schema | version",
+			"usage: gatehouse serve --config <file> --snapshot <file> | serve-kubernetes | validate <file> | schema | version",
 		)
 		return 2
 	}
@@ -50,6 +51,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "gatehouse validate %q: %v\n", args[1], err)
+		return 1
+	}
+	return 0
+}
+
+func serverExit(err error, stderr io.Writer) int {
+	if err != nil {
+		fmt.Fprintln(stderr, err)
 		return 1
 	}
 	return 0
