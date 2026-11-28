@@ -307,6 +307,9 @@ func (p *Plane) Metrics() http.Handler {
 		var text strings.Builder
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 		p.metrics.render(&text)
+		if p.opts.PolicyMetrics != nil {
+			p.opts.PolicyMetrics(&text)
+		}
 		if s := p.state.Load(); s != nil {
 			fmt.Fprintf(&text, "gatehouse_snapshot_digest_info{digest=%q} 1\n", s.digest)
 			for number, port := range s.ports {

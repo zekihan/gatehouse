@@ -152,12 +152,14 @@ func (p *Plane) applyPolicies(
 		authorizeForwardedMTLS(req.Header, route.rule.MTLS)
 	}
 	info := RequestInfo{
-		Listener:   record.listener,
-		Host:       hostName,
-		Protection: registry.Protection,
-		Path:       path,
-		ClientIP:   record.client,
-		Route:      &route.rule,
+		Listener:        record.listener,
+		Host:            hostName,
+		Protection:      registry.Protection,
+		Path:            path,
+		ClientIP:        record.client,
+		Route:           &route.rule,
+		CrowdSecEnabled: state.defaults.CrowdSec,
+		Limits:          state.routeLimits(&route.rule),
 	}
 	crowdSecExempt := route.rule.CrowdSecExempt &&
 		slices.Contains(registry.CrowdSecExemptPaths, path)
@@ -351,4 +353,11 @@ func (b *countedBody) Read(p []byte) (int, error) {
 		b.size.Add(uint64(n))
 	}
 	return n, err
+}
+
+func (s *compiled) routeLimits(rule *snapshot.Route) config.Limits {
+	if rule.Limits != nil {
+		return *rule.Limits
+	}
+	return s.defaults.Limits
 }

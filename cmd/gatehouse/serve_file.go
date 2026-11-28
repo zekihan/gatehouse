@@ -23,7 +23,9 @@ func serveFile(args []string, stdout, stderr io.Writer) error {
 	operator := flags.String("config", "", "operator configuration file")
 	input := flags.String("snapshot", "", "resolved JSON snapshot file")
 	bind := flags.String("bind", "127.0.0.1", "address to bind to")
-	metrics := flags.String("metrics", "", "metrics listen address")
+	metrics := flags.String("metrics", "", "metrics and readiness listen address")
+	var policy policyFlags
+	policy.register(flags)
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -42,19 +44,33 @@ func serveFile(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	proxy := dataplane.New(dataplane.Options{AccessLog: stdout})
-	if err := proxy.Update(snap); err != nil {
+	probe, err := policy.probe(*bind)
+	if err != nil {
 		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	policies, closePolicies, err := policy.start(ctx, stderr)
+	if err != nil {
+		return err
+	}
+	defer closePolicies()
+	proxy := dataplane.New(policies.options(dataplane.Options{AccessLog: stdout}))
+	if err := proxy.Update(snap); err != nil {
+		return err
+	}
 	if *metrics == "" {
 		return proxy.Serve(ctx, *bind)
 	}
-	return serveWithMetrics(ctx, proxy, *bind, *metrics)
+	return serveWithMetrics(ctx, proxy, probe, *bind, *metrics)
 }
 
-func serveWithMetrics(ctx context.Context, proxy *dataplane.Plane, bind, address string) error {
+func serveWithMetrics(
+	ctx context.Context,
+	proxy *dataplane.Plane,
+	probe *routeProbe,
+	bind, address string,
+) error {
 	var cfg net.ListenConfig
 	listener, err := cfg.Listen(ctx, "tcp", address)
 	if err != nil {
@@ -63,6 +79,13 @@ func serveWithMetrics(ctx context.Context, proxy *dataplane.Plane, bind, address
 	defer func() { _ = listener.Close() }()
 	mux := http.NewServeMux()
 	mux.Handle("GET /metrics", proxy.Metrics())
+	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
+		if !proxy.Ready() || !probe.check(r.Context()) {
+			http.Error(w, "Not Ready", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
